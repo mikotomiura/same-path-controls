@@ -69,7 +69,7 @@ def check_gaps(g: np.ndarray) -> np.ndarray:
     return g
 
 
-def clean_times(times: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
+def clean_times(times: np.ndarray, drop_ties: bool = True) -> tuple[np.ndarray, np.ndarray, int]:
     """v6's rule (matching_and_cleaning): stable sort, a press at the same time as the previous one dropped and
     counted; times from the first press. Returns the times, the original index of each kept press (so that kinds can
     follow: kinds[i] for i in index) and the number dropped."""
@@ -79,6 +79,8 @@ def clean_times(times: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
     order = np.argsort(t, kind="stable")
     t = t[order]
     keep = np.concatenate([[True], np.diff(t) > 0]) if t.size else np.array([], dtype=bool)
+    if not drop_ties:   # amendment B12 (decision 32): the sensitivity with ties kept (zero gaps retained), none dropped
+        keep = np.ones(t.size, dtype=bool)
     t, idx = t[keep], order[keep]
     return (t - t[0] if t.size else t), idx, int((~keep).sum())
 
@@ -430,7 +432,7 @@ def gridded(g: np.ndarray, grid_ms: float) -> np.ndarray:
     return gaps_of(clean_times(quantise(t, grid_ms))[0])
 
 
-def validity_gate(human: list[np.ndarray], key: list[int] | None = None, grid_ms: float = 1.0) -> dict:
+def validity_gate(human: list[np.ndarray], key: list[int] | None = None, grid_ms: float | None = None) -> dict:
     """Within E: N_FOLDS folds by person; per fold D2 and D3 trained on the other folds with their synthetic sessions
     drawn there; the held-out humans scored against held-out synthetic sessions of matched length from the same
     generators (D2: Uniform(30, 80); D3: the three generators fitted on the training folds). D1 has no training and is
@@ -450,7 +452,9 @@ def validity_gate(human: list[np.ndarray], key: list[int] | None = None, grid_ms
 
     Amendment B5 (descriptive): out[name]['gridded'] holds the AUC and the held-out human 'machine' share when the
     same trained detectors score the held-out synthetic sessions with their press times rounded to grid_ms (KUPA's
-    effective resolution estimated from H0 of E; 1 ms if none is read). It does not decide validity."""
+    effective resolution estimated from H0 of E). Amendment B12: with grid_ms None (the default; no resolution read)
+    no gridded version is computed, its AUC and share are None and grid_note reads 'unknown'; never 1 ms by default.
+    It does not decide validity."""
     key = key or [SEED, VERSION, 8]
     fold = person_folds(len(human), key)
     pooled: dict[str, dict[str, list]] = {d: {"score": [], "label": []}
@@ -472,7 +476,8 @@ def validity_gate(human: list[np.ndarray], key: list[int] | None = None, grid_ms
         redrawn["train"] += d4.kde.redrawn
         redrawn["held_out"] += kde_out.redrawn
         lab = [0] * len(test) + [1] * len(test)
-        g2, g3, g4 = ([gridded(g, grid_ms) for g in ss] for ss in (syn2, syn3, syn4))
+        # amendment B12 (decision 30): grid_ms None (no resolution read) -> no gridded version, its AUC 'unknown'
+        g2, g3, g4 = ([gridded(g, grid_ms) for g in ss] if grid_ms is not None else [] for ss in (syn2, syn3, syn4))
         # a gridded session left with fewer than 2 gaps has no D1 or D2 score: drop it and count it (all detectors)
         for name_, gs in (("D1_uniform", g2), ("D2_lr", g2), ("D2_rf", g2), ("D1_d3gen", g3), ("D3", g3), ("D4", g4)):
             no_score_g[name_] += sum(g.size < 2 for g in gs)
@@ -514,7 +519,7 @@ def validity_gate(human: list[np.ndarray], key: list[int] | None = None, grid_ms
         mg = sg[yg == 0] >= -DELTA_T if name.startswith("D1") else sg[yg == 0] > 0.5
         both = (yg == 0).any() and (yg == 1).any()
         out[name]["gridded"] = {"grid_ms": grid_ms, "auc": rank_auc(sg, yg) if both else None,   # None: one class empty
-                                "human_machine_share": float(mg.mean()) if mg.size else None,
+                                "human_machine_share": float(mg.mean()) if mg.size and grid_ms is not None else None,
                                 "n_human": int((yg == 0).sum()), "n_machine": int((yg == 1).sum()),
                                 "no_score": no_score_g[name]}   # gridded synthetic sessions without a score; B5: never decides
     out["D3"]["no_score"] = d3_short
@@ -751,12 +756,18 @@ def machine_general(readings: dict[tuple[str, str, str], str], valid: dict[str, 
             "responds_kept_out": responds_kept}
 
 
-def reading_probabilities(rate: float, n: int) -> dict[str, float]:
+def reading_probabilities(rate: float, n: int, one_way: bool = False) -> dict[str, float]:
     """Amendment B11 (decision 19): the probabilities of the three readings of one cell when each person flips with
-    probability `rate`, half each way, by enumerating every (b, c). not_changed_probability is the first of them."""
+    probability `rate`, half each way (or, amendment B12, all one way, b only), by enumerating every (b, c).
+    not_changed_probability is the first of them (half each way)."""
     if not 0 <= rate < 1 or n <= 0:
         raise ValueError("need 0 <= rate < 1 and n > 0")
     out = {"not changed": 0.0, "responds": 0.0, "undecided": 0.0}
+    if one_way:
+        for b in range(n + 1):
+            pr = math.comb(n, b) * rate ** b * (1 - rate) ** (n - b)
+            out[headline(b, 0, n)["reading"]] += pr
+        return out
     half = rate / 2
     for b in range(n + 1):
         for c in range(n - b + 1):
@@ -785,8 +796,10 @@ GATE_ENTRY = {"D1": "D1_uniform", "D2_lr": "D2_lr", "D2_rf": "D2_rf", "D3": "D3"
 
 
 def grid_note(gate: dict, detector: str) -> str:
-    """Amendment B11 (decision 25): 'note' if the detector's gridded validity version has an AUC below GATE_AUC (the note
-    'possible dependence on the recording grid' goes on its 'not changed' cells), 'no note' if not, 'unknown' if the
+    """Amendments B11, B12 (decisions 25, 30): 'note' if the detector's gridded validity version has an AUC below GATE_AUC
+    (the note 'possible dependence on the recording grid' goes on every cell of the detector, whatever its reading;
+    the H0 to H0q flips are shown beside each human-side 'responds' cell by the reporting step), 'no note' if not,
+    'unknown' (on every cell too) if the
     gridded AUC could not be computed (None or NaN: reported as such, never read as 'no dependence'). D1 is read on
     D1_uniform (analysis_details.D1_gate). The held-out humans are not gridded, so only the AUC can raise the note."""
     auc = gate[GATE_ENTRY[detector]]["gridded"]["auc"]
@@ -795,33 +808,67 @@ def grid_note(gate: dict, detector: str) -> str:
     return "note" if auc < GATE_AUC else "no note"
 
 
-def executable_plan(wished: np.ndarray) -> np.ndarray:
+def executable_plan(wished: np.ndarray, determined: np.ndarray | None = None) -> np.ndarray:
     """Amendment B11 (decision 22): M1's wished times can go backwards; the executable plan is their running maximum
-    (the character order kept, equal times allowed). It is the machine side's plan; the difference is reported."""
+    (the character order kept, equal times allowed). Amendment B12 (decision 32): each wished time is first raised to
+    the time it is determined (a_k for token k >= 2, a_2 for token 1), so no press is planned before it is known.
+    It is the machine side's plan; the difference is reported (plan_shift)."""
     w = np.asarray(wished, dtype=float)
     if w.ndim != 1 or not np.all(np.isfinite(w)):
         raise ValueError("wished times must be a finite 1-d array")
+    if determined is not None:
+        dt = np.asarray(determined, dtype=float)
+        if dt.shape != w.shape or not np.all(np.isfinite(dt)):
+            raise ValueError("determined times must match the wished times")
+        w = np.maximum(w, dt)
     return np.maximum.accumulate(w) if w.size else w
 
 
-def plan_shift(wished: np.ndarray) -> dict:
+def m1_wished_times(arrivals: np.ndarray, n_chars: np.ndarray, end: float) -> tuple[np.ndarray, np.ndarray]:
+    """Amendment B13 (decision 33): M1's schedule delayed by one token. Token k (arrival a_k, n_k characters; empty
+    tokens skipped by the caller and counted) is spread from a_{k+1} over a_{k+1} - a_k: wished times
+    a_{k+1} + j (a_{k+1} - a_k) / n_k, j = 0..n_k-1, with a_{K+1} = end (the end of generation). Times relative to a_1.
+    Returns the wished times and the times they are determined (a_{k+1}); every wished time is >= its determined time."""
+    a = np.asarray(arrivals, dtype=float)
+    n = np.asarray(n_chars, dtype=int)
+    if a.ndim != 1 or a.shape != n.shape or a.size == 0 or np.any(n < 1) or not np.all(np.isfinite(a)):
+        raise ValueError("need matching 1-d arrivals and positive character counts")
+    nxt = np.append(a[1:], float(end))
+    if np.any(np.diff(np.append(a, float(end))) < 0):
+        raise ValueError("arrivals and end must not go backwards")
+    wished = np.concatenate([nx + np.arange(k) * (nx - ak) / k for ak, nx, k in zip(a, nxt, n)]) - a[0]
+    det = np.repeat(nxt, n) - a[0]
+    return wished, det
+
+
+def plan_shift(wished: np.ndarray, determined: np.ndarray | None = None) -> dict:
     """Amendment B11: what the executable plan changed, reported apart: the share of presses moved and the median shift
     (executable minus wished) over the moved presses (None if none moved)."""
     w = np.asarray(wished, dtype=float)
-    d = executable_plan(w) - w
+    d = executable_plan(w, determined) - w
     moved = d > 0
     return {"share_moved": float(moved.mean()) if w.size else 0.0,
             "median_shift": float(np.median(d[moved])) if moved.any() else None}
 
 
 def general_probability_bounds(cell_probs: list[float]) -> dict:
-    """Amendment B11 (decision 19): rough bounds on the probability that every cell reads 'not changed', from the
-    per-cell probabilities: the product (cells independent) and the smallest (cells perfectly dependent). Cells share
-    persons, so the truth lies between them only under positive dependence; reported as rough."""
+    """Amendment B12: the Frechet bounds on the probability that every cell reads 'not changed', from the per-cell
+    probabilities p_i: lower max(0, sum p_i - (m - 1)), upper min p_i; the product (cells independent) is an example
+    of a dependence structure, not a bound."""
     pr = np.asarray(cell_probs, dtype=float)
-    if pr.size == 0 or np.any((pr < 0) | (pr > 1)):
-        raise ValueError("need probabilities in [0, 1]")
-    return {"independent": float(np.prod(pr)), "comonotone": float(pr.min())}
+    if pr.ndim != 1 or pr.size == 0 or not np.all(np.isfinite(pr)) or np.any((pr < 0) | (pr > 1)):
+        raise ValueError("need a 1-d array of finite probabilities in [0, 1]")
+    return {"lower": float(max(0.0, pr.sum() - (pr.size - 1))), "upper": float(pr.min()),
+            "independent_example": float(np.prod(pr))}
+
+
+def general_cell_ok(b: int, c: int, n: int, missing: int) -> bool:
+    """Amendment B12 (decision 29): a cell enters the general statement (and the abstract's 'not changed') only if its
+    complete-pair reading and all three missing-data bounds read 'not changed'."""
+    if n < zero_flip_min_clusters():   # fewer than 35 complete pairs: kept out (headline B11), stated explicitly
+        return False
+    r = boundary_readings(b, c, n, missing)
+    return all(v == "not changed" for v in r.values())
 
 
 def p5_passes(median_with_hook_ms: float, median_without_hook_ms: float) -> bool:
@@ -1147,8 +1194,8 @@ def jitter(times: np.ndarray, sd_ms: float, rng: np.random.Generator) -> np.ndar
     return t + rng.normal(0.0, sd_ms, t.size)
 
 
-def sensitivity_variant(times: np.ndarray, how: str, value: float, rng: np.random.Generator | None = None
-                        ) -> tuple[np.ndarray, np.ndarray, int]:
+def sensitivity_variant(times: np.ndarray, how: str, value: float, rng: np.random.Generator | None = None,
+                        drop_ties: bool = True) -> tuple[np.ndarray, np.ndarray, int]:
     """sensitivity_quantisation: the times changed by one assumption ('grid' ms or 'jitter' SD ms), then v6's
     cleaning (presses made equal or reordered are sorted, equal ones dropped and counted); gaps are taken after.
     Returns clean_times' result: times, the original index of each kept press (kinds follow by it), dropped."""
@@ -1160,7 +1207,7 @@ def sensitivity_variant(times: np.ndarray, how: str, value: float, rng: np.rando
         t = jitter(times, value, rng)
     else:
         raise ValueError(how)
-    return clean_times(t)
+    return clean_times(t, drop_ties)   # amendment B12: drop_ties False for the ties-kept sensitivity
 
 
 def kde_modes_spacing(g: np.ndarray, lo_ms: float, hi_ms: float, step_ms: float, bw_ms: float

@@ -1054,7 +1054,7 @@ def test_gate_survives_gridded_sessions_that_vanish(monkeypatch):
     h = humans(25, seed=11)
     base = v7.validity_gate(h, key=[1, 2, 3])
     monkeypatch.setattr(v7, "gridded", lambda g, grid_ms: np.array([5.0]))
-    out = v7.validity_gate(h, key=[1, 2, 3])
+    out = v7.validity_gate(h, key=[1, 2, 3], grid_ms=1.0)
     for n in ("D1_uniform", "D1_d3gen", "D2_lr", "D2_rf", "D3", "D4"):
         assert out[n]["gridded"]["auc"] is None and out[n]["gridded"]["no_score"] > 0
         assert out[n]["valid"] == base[n]["valid"] and out[n]["auc"] == base[n]["auc"]
@@ -1175,7 +1175,85 @@ def test_b11_plan_shift_bounds_and_p5():
     assert out["share_moved"] == pytest.approx(2 / 7) and out["median_shift"] == pytest.approx(4.0)
     assert v7.plan_shift(np.arange(5.0))["median_shift"] is None
     b = v7.general_probability_bounds([0.95] * 10)
-    assert b["independent"] == pytest.approx(0.95 ** 10) and b["comonotone"] == 0.95
+    assert b["independent_example"] == pytest.approx(0.95 ** 10) and b["upper"] == 0.95
+    assert b["lower"] == pytest.approx(0.5)            # Frechet: 10 x 0.95 - 9
     with pytest.raises(ValueError):
         v7.general_probability_bounds([1.2])
     assert v7.p5_passes(18.0, 19.0) and not v7.p5_passes(18.0, 19.01)
+
+
+# ---------------------------------------------------------------- amendment B12 (after attack-me round 4)
+
+
+def test_b12_general_cell_ok_needs_every_bound():
+    assert v7.general_cell_ok(0, 0, 80, 0)
+    assert v7.general_cell_ok(0, 0, 78, 2)                  # 2 missing as b still 'not changed'
+    assert not v7.general_cell_ok(0, 0, 77, 3)              # 3 missing as b -> 'undecided': split, kept out
+    assert v7.boundary_readings(0, 0, 77, 3)["complete"] == "not changed"   # the cell's own reading stays
+
+
+def test_b12_gate_without_a_resolution_is_unknown():
+    out = v7.validity_gate(humans(25, seed=11), key=[1, 2, 3], grid_ms=None)
+    for det in ("D1", "D2_lr", "D2_rf", "D3", "D4"):
+        assert v7.grid_note(out, det) == "unknown"
+    base = v7.validity_gate(humans(25, seed=11), key=[1, 2, 3], grid_ms=1.0)
+    assert all(out[n]["valid"] == base[n]["valid"] for n in ("D2_lr", "D2_rf", "D3", "D4"))
+
+
+def test_b12_ties_kept_sensitivity():
+    t = np.array([0.0, 10.0, 10.0, 25.0])
+    kept, idx, dropped = v7.clean_times(t, drop_ties=False)
+    assert dropped == 0 and v7.gaps_of(kept).tolist() == [10.0, 0.0, 15.0]
+    main, _, d2 = v7.clean_times(t)
+    assert d2 == 1 and v7.gaps_of(main).tolist() == [10.0, 15.0]
+
+
+def test_b12_token1_planned_no_earlier_than_determined():
+    wished = np.array([0.0, 10.0, 20.0, 30.0, 35.0])       # token 1 (3 chars) spread over a_2 - a_1 = 30 (pre-B13 rule)
+    det = np.array([30.0, 30.0, 30.0, 30.0, 30.0])         # token 1 known only at a_2 = 30
+    e = v7.executable_plan(wished, det)
+    assert e.tolist() == [30.0, 30.0, 30.0, 30.0, 35.0] and np.all(e >= det)
+    sh = v7.plan_shift(wished, det)
+    assert sh["share_moved"] == pytest.approx(3 / 5) and sh["median_shift"] == pytest.approx(20.0)
+    with pytest.raises(ValueError):
+        v7.executable_plan(wished, det[:3])
+
+
+def test_b12_one_way_table():
+    pr = v7.reading_probabilities(0.02, 80, one_way=True)
+    assert sum(pr.values()) == pytest.approx(1.0)
+    assert pr["not changed"] == pytest.approx(sum(math.comb(80, b) * 0.02 ** b * 0.98 ** (80 - b) for b in range(3)))
+
+
+def test_b13_m1_schedule_delayed_by_one_token():
+    # tokens arrive at 0, 30, 40, 100 (relative), with 3, 2, 1, 2 characters; generation ends at 120
+    a = np.array([0.0, 30.0, 40.0, 100.0])
+    n = np.array([3, 2, 1, 2])
+    w, det = v7.m1_wished_times(a, n, 120.0)
+    assert w.tolist() == [30.0, 40.0, 50.0, 40.0, 45.0, 100.0, 120.0, 130.0]
+    assert np.all(w >= det) and det.tolist() == [30, 30, 30, 40, 40, 100, 120, 120]
+    e = v7.executable_plan(w, det)
+    assert e.tolist() == [30, 40, 50, 50, 50, 100, 120, 130]      # an early token overlaps: the running maximum
+    sh = v7.plan_shift(w, det)
+    assert sh["share_moved"] == pytest.approx(2 / 8)
+    with pytest.raises(ValueError):
+        v7.m1_wished_times(a, np.array([3, 0, 1, 2]), 120.0)
+    with pytest.raises(ValueError):
+        v7.m1_wished_times(a, n, 90.0)                          # end before the last arrival
+
+
+def test_b12_review_fixes():
+    assert v7.validity_gate.__defaults__[-1] is None                # no 1 ms default
+    out = v7.validity_gate(humans(25, seed=11), key=[1, 2, 3])
+    assert out["D4"]["gridded"]["human_machine_share"] is None and v7.grid_note(out, "D4") == "unknown"
+    with pytest.raises(ValueError):
+        v7.general_probability_bounds([0.9, float("nan")])
+    assert v7.general_probability_bounds([1.0])["lower"] == 1.0
+    assert not v7.general_cell_ok(0, 0, 34, 0)                    # fewer than 35 complete pairs
+    t = np.array([0.0, 10.0, 10.0, 20.0])
+    assert v7.sensitivity_variant(t, "grid", 1.0, drop_ties=False)[2] == 0
+    assert v7.sensitivity_variant(t, "grid", 1.0)[2] == 1
+    p0 = v7.reading_probabilities(0.0, 80, one_way=True)
+    assert p0["not changed"] == 1.0
+    one, two = v7.reading_probabilities(0.10, 80, one_way=True), v7.reading_probabilities(0.10, 80)
+    assert one["responds"] > two["responds"]                      # one way, the difference reaches the margin sooner
