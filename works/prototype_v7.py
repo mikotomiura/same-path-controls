@@ -744,8 +744,8 @@ def machine_general(readings: dict[tuple[str, str, str], str], valid: dict[str, 
     plan exists but whose capture failed or that have no judgment (e.g. D4's sessions below 30 gaps); sessions without
     a plan are not pairs and only lower the clusters. A series enters only if every valid detector on every layer has
     a reading, enough clusters (enters_machine_general) and no missing pair in its cell (one missing pair placed as a
-    flip reads 'undecided'); a cell without a count raises. The statement holds if every entering series
-    reads 'not changed' in every such cell. Series kept out are listed apart, with their 'responds' cells, so that
+    flip reads 'undecided'); a cell without a count raises. The statement holds if every detector is valid
+    (analysis_details.across) and every entering series reads 'not changed' in every such cell. Series kept out are listed apart, with their 'responds' cells, so that
     the narrowing of the statement stays visible."""
     vd = [d for d in valid if valid[d]]
     cells = {s_: [(d, la, s_) for d in vd for la in layers] for s_ in series}
@@ -758,7 +758,9 @@ def machine_general(readings: dict[tuple[str, str, str], str], valid: dict[str, 
     enter = [s_ for s_ in series
              if all(enters_machine_general(n_clusters[c]) and missing_pairs[c] == 0 for c in cells[s_])]
     kept = [s_ for s_ in series if s_ not in enter]
-    general = bool(vd) and bool(enter) and all(readings[c] == "not changed" for s_ in enter for c in cells[s_])
+    # analysis_details.across (amendment B11): the machine side's general statement also needs all detectors valid
+    general = (len(vd) == len(valid) and bool(vd) and bool(enter)
+               and all(readings[c] == "not changed" for s_ in enter for c in cells[s_]))
     responds = [list(c) for s_ in enter for c in cells[s_] if readings[c] == "responds"]
     responds_kept = [list(c) for s_ in kept for c in cells[s_] if readings[c] == "responds"]
     return {"entering": enter, "kept_out": kept, "general_not_moved": general, "responds": responds,
@@ -984,7 +986,9 @@ def across(readings: dict[tuple[str, str], str], valid: dict[str, bool], layers:
         raise ValueError(f"readings of an unknown detector or layer: {stray}")
     vd = [d for d in valid if valid[d]]
     per = {d: [la for la in layers if readings[(d, la)] == "not changed"] for d in vd}
-    general = bool(vd) and all(readings[(d, la)] == "not changed" for d in vd for la in layers)
+    # amendment B11 (decision 26): the general statement requires every detector to be valid; with any detector
+    # 'not valid here' no general statement is made (the valid ones' cells are still read one by one)
+    general = len(vd) == len(valid) and all(readings[(d, la)] == "not changed" for d in vd for la in layers)
     responds = [[d, la] for d in vd for la in layers if readings[(d, la)] == "responds"]
     return {"not_changed_on": per, "valid": vd, "not_valid_here": [d for d in valid if not valid[d]],
             "general_not_moved": general, "responds": responds}

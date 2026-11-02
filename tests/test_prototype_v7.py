@@ -335,7 +335,12 @@ def test_across():
     assert a["responds"] == [["D2_lr", "page"]] and a["not_valid_here"] == ["D3"]
     only_d1 = {k: v for k, v in r.items() if k[0] in ("D1", "D3")}
     two = ("D1", "D3")
-    assert v7.across(only_d1, {"D1": True, "D3": False}, detectors=two)["general_not_moved"]
+    # amendment B11 (decision 26): any detector 'not valid here' -> no general statement, even if the valid ones
+    # all read 'not changed' (this assertion read the opposite before 2026-11-02, .steering/20261102-v7-analysis-run)
+    assert not v7.across(only_d1, {"D1": True, "D3": False}, detectors=two)["general_not_moved"]
+    both_nc = {k: "not changed" for k in only_d1}
+    assert v7.across(both_nc, {"D1": True, "D3": True}, detectors=two)["general_not_moved"]
+    assert not v7.across(both_nc, {"D1": True, "D3": False}, detectors=two)["general_not_moved"]
     # an invalid detector does not make the statement; neither does no valid detector
     assert not v7.across(only_d1, {"D1": False, "D3": False}, detectors=two)["general_not_moved"]
     with pytest.raises(ValueError):                  # a missing layer cannot pass
@@ -1028,7 +1033,11 @@ def test_b8_machine_general_uses_the_clusters_left_per_cell():
     r[("D4", "hook", "M2_8B")] = "responds"
     z = {c: 0 for c in cells}
     out = v7.machine_general(r, valid, n, series, missing_pairs=z)
-    assert out["entering"] == ["M0", "M3a"] and out["kept_out"] == ["M2_8B"] and out["general_not_moved"] is True
+    # D3 is not valid: no general statement (analysis_details.across, amendment B11; read True before 2026-11-02)
+    assert out["entering"] == ["M0", "M3a"] and out["kept_out"] == ["M2_8B"] and out["general_not_moved"] is False
+    valid = {"D1": True, "D4": True}
+    out = v7.machine_general(r, valid, n, series, missing_pairs=z)
+    assert out["entering"] == ["M0", "M3a"] and out["general_not_moved"] is True
     assert out["responds_kept_out"] == [["D4", "hook", "M2_8B"]] and out["responds"] == []
     r[("D4", "page", "M3a")] = "undecided"
     assert v7.machine_general(r, valid, n, series, missing_pairs=z)["general_not_moved"] is False
