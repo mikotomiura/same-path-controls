@@ -17,10 +17,12 @@ capture-spec-v2 section 5.
 
 from __future__ import annotations
 
+import atexit
 import datetime as dt
 import hashlib
 import json
 import math
+import shutil
 import sys
 import tempfile
 import unicodedata
@@ -30,6 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if not sys.pycache_prefix:
     sys.pycache_prefix = tempfile.mkdtemp(prefix="pycache-")
+    atexit.register(shutil.rmtree, sys.pycache_prefix, ignore_errors=True)
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "works"))
 
