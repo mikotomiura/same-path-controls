@@ -1026,14 +1026,15 @@ def test_b8_machine_general_uses_the_clusters_left_per_cell():
     n[("D1", "hook", "M2_8B")] = 34                  # one cell short keeps the whole series out
     n[("D4", "page", "M3a")] = 35                    # 35 is enough
     r[("D4", "hook", "M2_8B")] = "responds"
-    out = v7.machine_general(r, valid, n, series)
+    z = {c: 0 for c in cells}
+    out = v7.machine_general(r, valid, n, series, missing_pairs=z)
     assert out["entering"] == ["M0", "M3a"] and out["kept_out"] == ["M2_8B"] and out["general_not_moved"] is True
     assert out["responds_kept_out"] == [["D4", "hook", "M2_8B"]] and out["responds"] == []
     r[("D4", "page", "M3a")] = "undecided"
-    assert v7.machine_general(r, valid, n, series)["general_not_moved"] is False
+    assert v7.machine_general(r, valid, n, series, missing_pairs=z)["general_not_moved"] is False
     del n[("D1", "page", "M0")]
     with pytest.raises(ValueError):
-        v7.machine_general(r, valid, n, series)
+        v7.machine_general(r, valid, n, series, missing_pairs=z)
 
 def test_b5_gridded_version_never_changes_validity(monkeypatch):
     # make the gridded synthetic sessions look human (one held-out-like person repeated): the gridded AUC falls below
@@ -1257,3 +1258,110 @@ def test_b12_review_fixes():
     assert p0["not changed"] == 1.0
     one, two = v7.reading_probabilities(0.10, 80, one_way=True), v7.reading_probabilities(0.10, 80)
     assert one["responds"] > two["responds"]                      # one way, the difference reaches the margin sooner
+
+
+def test_b14_entry_probability_with_missing_pairs():
+    assert v7.entry_probability(0.0, 80, 0) == 1.0
+    assert v7.entry_probability(0.0, 80, 2) == 1.0                 # b + m = 2 at n = 80: still 'not changed'
+    assert v7.entry_probability(0.0, 80, 3) == 0.0                 # three one way: 'undecided'
+    for r in (0.01, 0.02, 0.05):
+        p0 = v7.entry_probability(r, 80, 0)
+        assert p0 == pytest.approx(v7.reading_probabilities(r, 80)["not changed"], abs=1e-12)
+        assert v7.entry_probability(r, 80, 1) < p0 and v7.entry_probability(r, 80, 2) < v7.entry_probability(r, 80, 1)
+        assert v7.entry_probability(r, 80, 1, one_way=True) <= v7.entry_probability(r, 80, 1) + 1e-12
+    assert v7.entry_probability(0.0, 40, 1) == 0.0                 # 39 complete pairs: one missing as b, n = 40
+    for bad in ((-0.1, 80, 0), (1.0, 80, 0), (0.1, 0, 0), (0.1, 80, 81), (0.1, 80, -1)):
+        with pytest.raises(ValueError):
+            v7.entry_probability(*bad)
+
+
+def test_b14_plan_zero_gaps_and_inversions():
+    a = np.array([0.0, 10.0, 12.0, 60.0])
+    w, det = v7.m1_wished_times(a, np.array([3, 1, 1, 2]), 70.0)
+    plan = v7.executable_plan(w, det)
+    share = v7.plan_zero_gap_share(plan)
+    assert share == pytest.approx(1 / 6)   # by hand: 10, 13.3, 16.7, 16.7 (token 2 raised), 60, 70, 75
+    assert v7.plan_zero_gap_share(np.array([0.0, 0.0, 10.0])) == 0.5   # denominator n - 1
+    assert v7.plan_zero_gap_share(np.array([0.0, 5.0, 9.0])) == 0.0
+    with pytest.raises(ValueError):
+        v7.plan_zero_gap_share(np.array([0.0, 5.0, 4.0]))         # a plan that goes backwards is not executable
+    with pytest.raises(ValueError):
+        v7.plan_zero_gap_share(np.array([0.0]))
+    assert v7.capture_inversions(np.array([0.0, 5.0, 4.0, 8.0, 7.0])) == 2
+    assert v7.capture_inversions(np.array([0.0, 5.0, 5.0])) == 0   # a tie is not an inversion
+    assert v7.capture_inversions(np.array([3.0])) == 0
+    with pytest.raises(ValueError):
+        v7.capture_inversions(np.array([0.0, float("nan")]))
+
+
+def test_b14_used_gap_sets():
+    g = np.full(100, 100.0)
+    h = g.copy()
+    h[5] = 5000.0                                                   # trimmed by D1 on one side only
+    assert v7.used_set_differs("D1", g, h) and v7.used_set_differs("D2_rf", g, h)
+    assert not v7.used_set_differs("D4", g, h) and not v7.used_set_differs("D3", g, h)
+    assert v7.used_set_differs("D4", g, g[:-1]) and v7.used_set_differs("D3", g, g[:-1])   # numbers differ
+    assert not v7.used_set_differs("D1", g, g + 1.0)
+    assert v7.used_gaps_mask("D3", np.full(150, 1.0)).sum() == 140
+    assert v7.used_gaps_mask("D4", np.full(20, 1.0)).sum() == 0     # no D4 score below 30 gaps
+    assert v7.used_gaps_mask("D4", np.full(100, 1.0)).sum() == v7.D4_L == 30   # exactly the first 30
+    with pytest.raises(ValueError):
+        v7.used_gaps_mask("D9", g)
+    with pytest.raises(ValueError):
+        v7.used_gaps_mask("D1", np.array([]))
+
+
+def test_b14_constants_match_the_conditions():
+    cond = json.loads((ROOT / "works" / "conditions" / "prototype_v7.json").read_text())
+    assert "5, 18 and 50 ms" in cond["series"]["P_nohook"] and v7.P_NOHOOK_MS == (5.0, 18.0, 50.0)
+    assert "jitter SD 2 ms and 8 ms" in cond["series"]["H0q"] and v7.H0Q_SHOWN == (("jitter", 2.0), ("jitter", 8.0))
+    assert "is not cleaned" in cond["series"]["M1_8B and M1_14B"]
+
+
+def test_b14_review_machine_general_missing_pairs_and_masks():
+    valid = {"D1": True}
+    series = ["M0", "M1_8B"]
+    cells = [("D1", la, s) for la in ("hook", "page") for s in series]
+    r = {c: "not changed" for c in cells}
+    n = {c: 40 for c in cells}
+    z = {c: 0 for c in cells}
+    z[("D1", "page", "M1_8B")] = 1                                # one missing pair keeps the series out
+    n[("D1", "hook", "M0")] = 35
+    out = v7.machine_general(r, valid, n, series, missing_pairs=z)
+    assert out["entering"] == ["M0"] and out["kept_out"] == ["M1_8B"]
+    with pytest.raises(TypeError):
+        v7.machine_general(r, valid, n, series)                   # the count is required
+    del z[("D1", "hook", "M0")]
+    with pytest.raises(ValueError):
+        v7.machine_general(r, valid, n, series, missing_pairs=z)
+    z[("D1", "hook", "M0")] = -1
+    with pytest.raises(ValueError):
+        v7.machine_general(r, valid, n, series, missing_pairs=z)
+    rng = np.random.default_rng(3)
+    g2 = rng.exponential(200.0, 300)
+    assert np.array_equal(g2[v7.used_gaps_mask("D1", g2)], v7.trimmed(g2))
+    edge = np.array([1.0] * 9 + [0.0, 90.0])   # 90 = 10 x the mean (99 / 11 = 9): kept by the trim (<=)
+    assert edge[-1] == v7.TRIM_FACTOR * edge.mean() and v7.used_gaps_mask("D1", edge)[-1]
+    assert not v7.used_gaps_mask("D1", np.array([1.0] * 9 + [0.0, 91.0]))[-1]
+    g = np.full(100, 100.0)
+    h = g.copy()
+    h[5] = 5000.0
+    assert v7.used_set_differs("D2_lr", g, h)
+    for k, want in ((69, 0), (70, 70), (71, 70)):
+        assert v7.used_gaps_mask("D3", np.full(k, 1.0)).sum() == want
+    for k, want in ((29, 0), (30, 30), (31, 30)):
+        assert v7.used_gaps_mask("D4", np.full(k, 1.0)).sum() == want
+    kept = np.arange(101)
+    other = np.concatenate([np.arange(50), np.arange(51, 102)])   # a different press dropped, same count
+    assert not v7.used_set_differs("D4", g, g, kept, kept)
+    assert v7.used_set_differs("D4", g, g, kept, other)
+    with pytest.raises(ValueError):
+        v7.used_set_differs("D4", g, g, kept, None)
+    with pytest.raises(ValueError):
+        v7.used_set_differs("D4", g, g, kept[:-1], kept[:-1])
+    for r_ in (0.01, 0.02):
+        assert v7.entry_probability(r_, 80, 0, one_way=True) == pytest.approx(
+            v7.reading_probabilities(r_, 80, one_way=True)["not changed"], abs=1e-12)
+    hand = sum(math.comb(80, b) * 0.02 ** b * 0.98 ** (80 - b) for b in range(3))   # one way: b <= 2 reads not changed
+    assert v7.entry_probability(0.02, 80, 0, one_way=True) == pytest.approx(hand, abs=1e-12)
+    assert v7.entry_probability(0.02, 80, 80) == 0.0

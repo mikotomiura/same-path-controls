@@ -52,6 +52,8 @@ GATE_AUC, GATE_HUMAN_SHARE = 0.90, 0.10
 MARGIN = 0.10            # headline equivalence margin
 HD3_LIMIT = 0.02         # amendment B11: Hd3's limit on the mean absolute paired change
 P5_LIMIT_MS = 1.0        # amendment B11: P5, page-layer median with and without the hook
+P_NOHOOK_MS = (5.0, 18.0, 50.0)   # amendment B14 (decision 38): P_nohook's controls without load (5 ms added)
+H0Q_SHOWN = (("jitter", 2.0), ("jitter", 8.0))   # amendment B14 (decision 37): H0q versions beside 'responds'
 N_BOOT = 2000
 N_FOLDS = 5
 Z95 = float(stats.norm.ppf(0.975))
@@ -734,20 +736,27 @@ def enters_machine_general(n_clusters: int) -> bool:
 
 def machine_general(readings: dict[tuple[str, str, str], str], valid: dict[str, bool],
                     n_clusters: dict[tuple[str, str, str], int], series: list[str],
-                    layers: tuple[str, ...] = ("hook", "page")) -> dict:
+                    layers: tuple[str, ...] = ("hook", "page"), *,
+                    missing_pairs: dict[tuple[str, str, str], int]) -> dict:
     """Amendment B8: the machine-side general statement. readings[(detector, layer, series)] -> the machine_path
-    reading; valid[detector] from the gate; n_clusters[(detector, layer, series)] the clusters left in that cell after
-    removing its missing judgments (missing judgments differ by detector and layer, e.g. D4's short sessions). A
-    series enters only if every valid detector on every layer has a reading and enough clusters
-    (enters_machine_general) in its cell; a cell without a count raises. The statement holds if every entering series
+    reading; valid[detector] from the gate; n_clusters[(detector, layer, series)] the clusters of that cell's complete
+    pairs. Amendment B14 (decision 35): missing_pairs[(detector, layer, series)] counts the pairs of that cell whose
+    plan exists but whose capture failed or that have no judgment (e.g. D4's sessions below 30 gaps); sessions without
+    a plan are not pairs and only lower the clusters. A series enters only if every valid detector on every layer has
+    a reading, enough clusters (enters_machine_general) and no missing pair in its cell (one missing pair placed as a
+    flip reads 'undecided'); a cell without a count raises. The statement holds if every entering series
     reads 'not changed' in every such cell. Series kept out are listed apart, with their 'responds' cells, so that
     the narrowing of the statement stays visible."""
     vd = [d for d in valid if valid[d]]
     cells = {s_: [(d, la, s_) for d in vd for la in layers] for s_ in series}
-    missing = [list(c) for s_ in series for c in cells[s_] if c not in readings or c not in n_clusters]
+    missing = [list(c) for s_ in series for c in cells[s_]
+               if c not in readings or c not in n_clusters or c not in missing_pairs]
     if missing:
-        raise ValueError(f"readings or cluster counts missing: {missing}")
-    enter = [s_ for s_ in series if all(enters_machine_general(n_clusters[c]) for c in cells[s_])]
+        raise ValueError(f"readings, cluster counts or missing-pair counts missing: {missing}")
+    if any(missing_pairs[c] < 0 for s_ in series for c in cells[s_]):
+        raise ValueError("a missing-pair count is negative")
+    enter = [s_ for s_ in series
+             if all(enters_machine_general(n_clusters[c]) and missing_pairs[c] == 0 for c in cells[s_])]
     kept = [s_ for s_ in series if s_ not in enter]
     general = bool(vd) and bool(enter) and all(readings[c] == "not changed" for s_ in enter for c in cells[s_])
     responds = [list(c) for s_ in enter for c in cells[s_] if readings[c] == "responds"]
@@ -810,9 +819,10 @@ def grid_note(gate: dict, detector: str) -> str:
 
 def executable_plan(wished: np.ndarray, determined: np.ndarray | None = None) -> np.ndarray:
     """Amendment B11 (decision 22): M1's wished times can go backwards; the executable plan is their running maximum
-    (the character order kept, equal times allowed). Amendment B12 (decision 32): each wished time is first raised to
-    the time it is determined (a_k for token k >= 2, a_2 for token 1), so no press is planned before it is known.
-    It is the machine side's plan; the difference is reported (plan_shift)."""
+    (the character order kept, equal times allowed). Each wished time is first raised to the time it is determined
+    (`determined`; under B13, m1_wished_times gives a_{k+1} for token k, so the raise changes nothing there), so no
+    press is planned before it is known. It is the machine side's plan and is not cleaned (amendment B14, decision 36:
+    its zero gaps are kept and counted by plan_zero_gap_share); the difference is reported (plan_shift)."""
     w = np.asarray(wished, dtype=float)
     if w.ndim != 1 or not np.all(np.isfinite(w)):
         raise ValueError("wished times must be a finite 1-d array")
@@ -873,7 +883,7 @@ def general_cell_ok(b: int, c: int, n: int, missing: int) -> bool:
 
 def p5_passes(median_with_hook_ms: float, median_without_hook_ms: float) -> bool:
     """Amendment B11, prediction P5: the page layer's median recorded gap without the hook within P5_LIMIT_MS of that
-    with the hook (18 and 50 ms controls without load, each checked on its own)."""
+    with the hook (P_NOHOOK_MS: 5, 18 and 50 ms controls without load, amendment B14; each checked on its own)."""
     return abs(median_with_hook_ms - median_without_hook_ms) <= P5_LIMIT_MS + EPS_EDGE
 
 
@@ -1183,6 +1193,92 @@ def replay_error(planned: np.ndarray, recorded: np.ndarray, planned_kinds: list[
 
 
 # ---------------------------------------------------------------- timing sensitivity and resolution
+
+
+def entry_probability(rate: float, n_planned: int, missing: int, one_way: bool = False) -> float:
+    """Amendment B14 (decision 35): the design table's probability that one human-side cell enters the general
+    statement (general_cell_ok) when `missing` of `n_planned` pairs are missing and each complete pair flips with
+    probability `rate`, half each way (or all one way, b only). Missing pairs are pairs with an original but no
+    capture or no judgment; sessions without a plan are not pairs (they lower n_planned)."""
+    if not 0 <= rate < 1 or n_planned <= 0 or not 0 <= missing <= n_planned:
+        raise ValueError("need 0 <= rate < 1, n_planned > 0 and 0 <= missing <= n_planned")
+    n = n_planned - missing
+    total = 0.0
+    if one_way or rate == 0:
+        for b in range(n + 1):
+            pr = math.comb(n, b) * rate ** b * (1 - rate) ** (n - b)
+            if pr and general_cell_ok(b, 0, n, missing):
+                total += pr
+        return total
+    half = rate / 2
+    for b in range(n + 1):
+        for c in range(n - b + 1):
+            pr = math.exp(math.lgamma(n + 1) - math.lgamma(b + 1) - math.lgamma(c + 1) - math.lgamma(n - b - c + 1)
+                          + (b + c) * math.log(half) + (n - b - c) * math.log1p(-rate))
+            if general_cell_ok(b, c, n, missing):
+                total += pr
+    return total
+
+
+def plan_zero_gap_share(plan: np.ndarray) -> float:
+    """Amendment B14 (decision 36): the share of planned presses whose gap to the previous press is 0 in the uncleaned
+    executable plan (series.M1); the denominator is the presses after the first (n - 1), stated in the table's note. The plan must be non-decreasing (executable_plan's output)."""
+    p = np.asarray(plan, dtype=float)
+    if p.ndim != 1 or p.size < 2 or not np.all(np.isfinite(p)):
+        raise ValueError("need a finite 1-d plan of at least 2 presses")
+    g = np.diff(p)
+    if np.any(g < 0):
+        raise ValueError("the executable plan must not go backwards")
+    return float((g == 0).mean())
+
+
+def capture_inversions(times: np.ndarray) -> int:
+    """Amendment B14 (decision 39, matching_and_cleaning): the number of presses whose recorded time is earlier than
+    the previous press's in capture order (the previous press, not the running maximum), counted before the stable
+    sort of clean_times."""
+    t = np.asarray(times, dtype=float)
+    if t.ndim != 1 or not np.all(np.isfinite(t)):
+        raise ValueError("need finite 1-d times in capture order")
+    return int((np.diff(t) < 0).sum()) if t.size > 1 else 0
+
+
+def used_gaps_mask(detector: str, g: np.ndarray) -> np.ndarray:
+    """Amendment B14 (decision 39): which gaps of a session a detector uses: D1 and D2 the gaps kept by the trim, D3 the
+    gaps inside whole windows of WINDOW, D4 the first D4_L gaps."""
+    g = check_gaps(g)
+    m = np.zeros(g.size, dtype=bool)
+    if detector in ("D1", "D2_lr", "D2_rf"):
+        if g.size == 0:
+            raise ValueError("no gap")
+        m = g <= TRIM_FACTOR * g.mean()
+    elif detector == "D3":
+        m[: (g.size // WINDOW) * WINDOW] = True
+    elif detector == "D4":
+        if g.size >= D4_L:   # d4_features: no D4 score below D4_L gaps, so no gap is used
+            m[:D4_L] = True
+    else:
+        raise ValueError(detector)
+    return m
+
+
+def used_set_differs(detector: str, before: np.ndarray, after: np.ndarray, kept_before: np.ndarray | None = None,
+                     kept_after: np.ndarray | None = None) -> bool:
+    """Amendment B14 (decision 39): whether the set of gaps the detector uses differs between the two sides of a pair.
+    Compared by position; a pair whose numbers of gaps differ counts as differing, and so does a pair whose kept press
+    indices (clean_times' second output, given for both sides) differ, since equal counts can hide different presses
+    dropped. For D3 and D4 equal counts and equal kept presses mean the same set. Reported as a share, not used to read."""
+    a, b = check_gaps(before), check_gaps(after)
+    if (kept_before is None) != (kept_after is None):
+        raise ValueError("give the kept press indices of both sides or of neither")
+    if a.size != b.size:
+        return True
+    if kept_before is not None:
+        kb, ka = np.asarray(kept_before), np.asarray(kept_after)
+        if kb.shape != (a.size + 1,) or ka.shape != (b.size + 1,):
+            raise ValueError("kept press indices must have one more entry than the gaps")
+        if not np.array_equal(kb, ka):
+            return True
+    return bool(np.any(used_gaps_mask(detector, a) != used_gaps_mask(detector, b)))
 
 
 def quantise(times: np.ndarray, grid_ms: float) -> np.ndarray:
