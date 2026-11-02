@@ -390,10 +390,10 @@ def test_paired_prob_change():
 
 
 def test_m3_uses_the_conditions_key_and_one_donor():
-    donors = humans(10, seed=2)
+    donors = humans(45, seed=2, lo=80, hi=120)
     out = v7.m3(5, 300, donors)
-    rng = np.random.default_rng([20261031, 7, 3, 5])
-    assert out["donor"] == int(rng.integers(0, 10))
+    rng = np.random.default_rng([20261031, 7, 3, 5])     # the gap stream of text 5
+    assert out["donor"] == int(np.random.default_rng([20261031, 7, 13]).permutation(45)[5])   # amendments B2, B10
     g = donors[out["donor"]]
     assert set(out["M3a"]) <= set(g) and set(out["M3b"]) <= set(g)
     assert out["M3a"].size == out["M3b"].size == 300
@@ -641,7 +641,9 @@ def test_headline_discordance_route():
 def test_read_rule_requires_both_for_not_changed():
     assert v7.read_rule((-0.05, 0.05), (0.0, 0.08)) == "not changed"
     assert v7.read_rule((-0.05, 0.05), (0.0, 0.12)) == "undecided"
-    assert v7.read_rule((0.02, 0.15), (0.03, 0.2)) == "responds"
+    assert v7.read_rule((0.02, 0.15), (0.03, 0.2)) == "undecided"   # amendment B3: not the whole interval beyond
+    assert v7.read_rule((0.11, 0.3), (0.03, 0.2)) == "responds"
+    assert v7.read_rule((-0.3, -0.11), (0.03, 0.2)) == "responds"
     assert v7.read_rule((-0.05, 0.05), (0.11, 0.3)) == "responds"
     assert v7.read_rule((-0.15, 0.05), (0.0, 0.3)) == "undecided"
 
@@ -777,3 +779,301 @@ def test_floor_needs_enough_persons():
     h0 = np.array([0.1, 0.2, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan])
     out = v7.above_floor(h0, h0 + 0.3, h0 + 0.3001, [5])
     assert out["n"] == 2 and out["above_floor"] is None
+
+
+# ---------------------------------------------------------------- amendments B (2026-11-02, after attack-me round 2)
+
+
+def test_b3_two_steps_b4_c0():
+    # R3 N3 / Codex 2 of round 2: b = 4, c = 0 read 'responds' before B3 without showing a change beyond 0.10
+    h = v7.headline(4, 0, 40)
+    assert h["tango_95"][0] > 0 and h["tango_95"][0] < v7.MARGIN
+    assert h["reading"] == "undecided" and h["changed_from_0"] is True
+    assert v7.headline(0, 0, 40)["changed_from_0"] is False
+    big = v7.headline(20, 0, 40)
+    assert big["tango_95"][0] > v7.MARGIN and big["reading"] == "responds" and big["route"] in ("difference", "both")
+
+
+def test_b3_narrower_interval_cannot_lose_responds():
+    # the same share of flips with more persons: once 'responds' it stays (monotone in n for a fixed share)
+    seen = False
+    for n in range(20, 401, 20):
+        r = v7.headline(n // 2, 0, n)["reading"]
+        seen = seen or r == "responds"
+        assert not (seen and r != "responds")
+    assert seen
+
+
+def test_b8_zero_flip_min_clusters_is_35():
+    assert v7.zero_flip_min_clusters() == 35
+    t = {row["n_eff"]: row for row in v7.zero_flip_table()}
+    assert t[34]["reading"] == "undecided" and round(t[34]["tango_95"][1], 3) == 0.102
+    assert t[35]["reading"] == "not changed" and t[40]["reading"] == "not changed"
+    assert v7.enters_machine_general(35) and not v7.enters_machine_general(34)
+
+
+def test_b2_donors_without_replacement_and_old_draw_had_34():
+    d = v7.m3_donors(160)
+    assert d.size == 40 and np.unique(d).size == 40 and d.max() < 160
+    old = {int(np.random.default_rng([20261031, 7, 3, t]).integers(0, 160)) for t in range(40)}
+    assert len(old) == 34    # the reason of B2: 34 clusters cannot read 'not changed'
+    with pytest.raises(ValueError):
+        v7.m3_donors(39)
+    with pytest.raises(ValueError):
+        v7.m3(40, 100, humans(45, seed=2, lo=80, hi=120))
+
+
+def test_machine_path_changed_from_0_needs_both_intervals():
+    n = 40
+    before = np.ones(n, dtype=bool)
+    after = before.copy()
+    after[:4] = False
+    out = v7.machine_path_reading(before, after, np.arange(n), [1])
+    assert out["reading"] == "undecided" and out["changed_from_0"] is True
+    out0 = v7.machine_path_reading(before, before.copy(), np.arange(n), [1])
+    assert out0["changed_from_0"] is False and out0["reading"] == "not changed"
+
+
+def test_d4_features_kde_and_training():
+    rng = np.random.default_rng(5)
+    h = humans(30, seed=3)
+    assert v7.d4_features(np.ones(29)) is None and v7.d4_features(np.arange(40.0)).tolist() == list(range(30))
+    kde = v7.fit_kde1(h)
+    assert kde.pool.size == 30 * 30
+    x = kde.draw(5000, rng)
+    assert x.size == 5000 and x.min() >= 0
+    zero = v7.KDE1(np.zeros(10))
+    z = zero.draw(1000, np.random.default_rng(1))
+    assert z.min() >= 0 and zero.redrawn > 0      # draws below 0 are drawn again and counted
+    m = v7.train_d4(humans(150, seed=3), np.random.default_rng(v7.D4_SEED))
+    # held out: new human-like persons against new draws of the same KDE (the paper's Universal bots); a uniform
+    # series would be outside the training distribution and is not what D4 learns
+    held = humans(50, seed=8)
+    machine = v7.d4_synthetic(50, m.kde, np.random.default_rng(99))
+    p = m.proba(held + machine + [np.ones(10)])
+    assert np.isnan(p[-1]) and np.all(np.isfinite(p[:-1]))
+    assert v7.rank_auc(p[:-1], np.array([0] * 50 + [1] * 50)) > 0.75   # 0.86 on these seeds (lag-1 dependence)
+
+
+def test_d4_is_trained_only_on_its_own_humans():
+    h = humans(20, seed=4)
+    m1 = v7.train_d4(h, np.random.default_rng(28))
+    m2 = v7.train_d4(h, np.random.default_rng(28))
+    probe = humans(5, seed=9)
+    assert np.array_equal(m1.proba(probe), m2.proba(probe))    # deterministic with the conditions' seeds
+    assert np.array_equal(m1.kde.pool, np.concatenate([g[:30] for g in h]))
+
+
+def test_b5_gridded_gate_is_reported_and_does_not_decide():
+    out = v7.validity_gate(humans(25, seed=11), key=[1, 2, 3], grid_ms=16.0)
+    for name in ("D1_uniform", "D1_d3gen", "D2_lr", "D2_rf", "D3", "D4"):
+        g = out[name]["gridded"]
+        assert g["grid_ms"] == 16.0 and 0 <= g["auc"] <= 1 and 0 <= g["human_machine_share"] <= 1
+        # the held-out humans are not gridded, so their 'machine' share is the same
+        assert g["human_machine_share"] == pytest.approx(out[name]["human_machine_share"])
+    assert "no_score" in out["D4"] and "valid" in out["D4"]
+    # the gridded version is computed on gridded sessions (a 16 ms grid moves at least one AUC)
+    assert any(out[k]["gridded"]["auc"] != out[k]["auc"] for k in ("D1_uniform", "D1_d3gen", "D2_lr", "D2_rf", "D3", "D4"))
+
+
+def test_gridded_rounds_times_not_gaps():
+    g = np.array([10.4, 10.4, 10.4])
+    assert v7.gridded(g, 1.0).tolist() == [10.0, 11.0, 10.0]   # times 0, 10.4, 20.8, 31.2 -> 0, 10, 21, 31
+    assert v7.gridded(np.array([0.3, 0.3]), 1.0).tolist() == [1.0]   # equal times after rounding: dropped
+
+
+def test_saturation_and_logit():
+    assert v7.saturation_share(np.array([0.0, 0.005, 0.5, 0.995, 1.0, np.nan])) == pytest.approx(0.8)
+    with pytest.raises(ValueError):
+        v7.saturation_share(np.array([np.nan]))
+    h = humans(15, seed=6)
+    d2 = v7.train_d2(h, np.random.default_rng(42))
+    p = d2.proba(h[:3])
+    assert np.allclose(1 / (1 + np.exp(-p["D2_lr_logit"])), p["D2_lr"])
+
+
+def test_d4_in_detectors_and_margin():
+    assert "D4" in v7.DETECTORS
+    assert v7.threshold_margin("D4", np.array([0.2]))[0] == pytest.approx(0.3)
+
+
+def test_conditions_record_amendments_b():
+    assert "amendment B1" in C7["data"]["prompts"] and len(C7["data"]["prompts_added"]) == 30
+    assert "40 prompts (P1-P40) x 1 seed" in C7["series"]["M1_8B and M1_14B"]
+    assert "permutation(|E|)[:40]" in C7["series"]["M3a"]
+    assert "D4" in C7["detectors_C2"] and "responds beyond 0.10" in C7["detectors_C2"]["headline"]
+    assert "35 or more" in C7["detectors_C2"]["headline"]
+
+
+def test_machine_path_changed_from_0_is_common_to_both_intervals():
+    # 40 sessions in 4 clusters, one flip in each: every bootstrap resample gives 0.10 (excludes 0), while the
+    # effective-n interval (n_eff = 4, b_eff = 0.4) contains 0; 'changed from 0' must need both
+    n = 40
+    before = np.ones(n, dtype=bool)
+    after = before.copy()
+    after[[0, 10, 20, 30]] = False
+    out = v7.machine_path_reading(before, after, np.arange(n) // 10, [1])
+    assert out["bootstrap_95"]["difference"][1] < 0 and out["effective_n_95"]["difference"][1] > 0
+    assert out["changed_from_0"] is False
+
+
+# ---------------------------------------------------------------- amendment B10 and the reviews of B (2026-11-02)
+
+
+def _all_keys(fold_shift: int = 1) -> list:
+    S = 20261031
+    k = [[S, 7, 1, p] for p in range(40)] + [[S, 7, 2]] + [[S, 7, 3, t] for t in range(40)] + [[S, 7, 13]]
+    k += [[S, 7, 4, la, p, st] for la in range(2) for p in range(12) for st in range(3)]
+    k += [[S, 7, 5, la, d, se] for la in range(2) for d in range(5) for se in range(12)]
+    k += [[S, 7, 6]] + [[S, 7, 7, p] for p in range(40)] + [[S, 7, 8]]
+    k += [[S, 7, 9, la, d, p] for la in range(2) for d in range(5) for p in range(6)]
+    k += [[S, 7, 10, la, se, ss, sd] for la in range(2) for se in range(10) for ss in range(40) for sd in range(2)]
+    k += [[S, 7, 11, la, d, se] for la in range(2) for d in range(5) for se in range(9)]
+    k += [[S, 7, 12, la, d] for la in range(2) for d in range(5)]
+    for seed in (v7.D2_SEED, v7.D3_SEED, v7.D4_SEED):
+        k.append(seed)
+        for f in range(v7.N_FOLDS):
+            k += [[seed, f + fold_shift], [seed, f + fold_shift, 1]]
+    return k
+
+
+def test_b10_no_two_keys_give_one_stream():
+    def first(key):
+        return tuple(np.random.default_rng(key).integers(0, 2 ** 62, 4))
+    assert first(28) == first([28, 0])          # the reason of B10: a trailing 0 is absent for SeedSequence
+    seen = {}
+    for key in _all_keys(1):
+        f = first(key)
+        assert f not in seen, (seen.get(f), key)
+        seen[f] = key
+    old = [first(key) for key in _all_keys(0)]
+    assert len(set(old)) < len(old)            # the keys before B10 collided
+
+
+def test_b10_gate_uses_shifted_fold_keys(monkeypatch):
+    seen = []
+    real = v7.train_d4
+    monkeypatch.setattr(v7, "train_d4", lambda h, rng: (seen.append(rng.bit_generator.seed_seq.entropy), real(h, rng))[1])
+    v7.validity_gate(humans(25, seed=11), key=[1, 2, 3])
+    assert seen == [[v7.D4_SEED, k + 1] for k in range(v7.N_FOLDS)]
+
+
+def test_gate_kde_and_training_use_the_training_folds_only(monkeypatch):
+    h = humans(25, seed=11)
+    fold = v7.person_folds(len(h), [1, 2, 3])
+    pools = []
+    real = v7.fit_kde1
+    monkeypatch.setattr(v7, "fit_kde1", lambda hs: (pools.append([id(g) for g in hs]), real(hs))[1])
+    v7.validity_gate(h, key=[1, 2, 3])
+    ids = [id(g) for g in h]
+    # train_d4 and the held-out generator each fit once per fold, on the persons outside the fold
+    assert len(pools) == 2 * v7.N_FOLDS
+    for i, used in enumerate(pools):
+        k = i // 2
+        assert set(used) == {ids[j] for j in range(len(h)) if fold[j] != k}
+
+
+def test_b5_validity_is_the_same_whatever_the_grid():
+    h = humans(25, seed=11)
+    a = v7.validity_gate(h, key=[1, 2, 3], grid_ms=1.0)
+    b = v7.validity_gate(h, key=[1, 2, 3], grid_ms=16.0)
+    for name in ("D1", "D2_lr", "D2_rf", "D3", "D4"):
+        assert a[name]["valid"] == b[name]["valid"] and a[name]["auc"] == b[name]["auc"]
+        assert a[name]["human_machine_share"] == b[name]["human_machine_share"]
+    assert set(b["D4"]["redrawn"]) == {"train", "held_out"}
+    assert "no_score" in b["D3"]["gridded"] and "n_machine" in b["D4"]["gridded"]
+
+
+def test_gridded_lost_presses_are_counted_not_hidden():
+    # D4 synthetic sessions are exactly 30 gaps; a coarse grid merges presses, so some lose their D4 score
+    h = humans(25, seed=11)
+    out = v7.validity_gate(h, key=[1, 2, 3], grid_ms=200.0)
+    g = out["D4"]["gridded"]
+    assert g["no_score"] > 0 and g["n_machine"] + g["no_score"] >= sum(1 for x in h if x.size >= 30)
+
+
+def test_d4_held_out_synthetic_matches_eligible_humans():
+    h = humans(20, seed=12) + [np.full(10, 100.0) for _ in range(5)]    # five held-out-able humans too short for D4
+    out = v7.validity_gate(h, key=[1, 2, 3])
+    assert out["D4"]["no_score"] == 5 and out["D4"]["n_human"] == 20 and out["D4"]["n_machine"] == 20
+
+
+def test_b3_edges_on_the_responds_side():
+    assert v7.read_rule((v7.MARGIN, 0.3), (0.0, 0.05)) == "undecided"          # an end equal to 0.10 is inside
+    assert v7.read_rule((v7.MARGIN + 1e-9, 0.3), (0.0, 0.05)) == "responds"
+    assert v7.read_rule((-0.3, -v7.MARGIN), (0.0, 0.05)) == "undecided"
+    assert v7.read_rule((-0.3, -v7.MARGIN - 1e-9), (0.0, 0.05)) == "responds"
+    assert v7.changed_from_0((0.0, 0.2)) is False and v7.changed_from_0((1e-12, 0.2)) is True
+
+
+def test_saturation_edges_inclusive():
+    assert v7.saturation_share(np.array([0.01, 0.99, 0.0101, 0.9899])) == 0.5
+
+
+def test_d4_rf_seed_and_trees():
+    m = v7.train_d4(humans(20, seed=4), np.random.default_rng(28))
+    assert m.rf.random_state == 28 and m.rf.n_estimators == 100
+
+
+def test_b8_machine_general_uses_the_clusters_left_per_cell():
+    valid = {"D1": True, "D4": True, "D3": False}
+    series = ["M0", "M2_8B", "M3a"]
+    cells = [(d, la, s) for d in ("D1", "D4") for la in ("hook", "page") for s in series]
+    r = {c: "not changed" for c in cells}
+    n = {c: 40 for c in cells}
+    n[("D1", "hook", "M2_8B")] = 34                  # one cell short keeps the whole series out
+    n[("D4", "page", "M3a")] = 35                    # 35 is enough
+    r[("D4", "hook", "M2_8B")] = "responds"
+    out = v7.machine_general(r, valid, n, series)
+    assert out["entering"] == ["M0", "M3a"] and out["kept_out"] == ["M2_8B"] and out["general_not_moved"] is True
+    assert out["responds_kept_out"] == [["D4", "hook", "M2_8B"]] and out["responds"] == []
+    r[("D4", "page", "M3a")] = "undecided"
+    assert v7.machine_general(r, valid, n, series)["general_not_moved"] is False
+    del n[("D1", "page", "M0")]
+    with pytest.raises(ValueError):
+        v7.machine_general(r, valid, n, series)
+
+def test_b5_gridded_version_never_changes_validity(monkeypatch):
+    # make the gridded synthetic sessions look human (one held-out-like person repeated): the gridded AUC falls below
+    # the gate, and validity must still follow the ungridded AUC and share only
+    template = humans(1, seed=99)[0]
+    monkeypatch.setattr(v7, "gridded", lambda g, grid_ms: template.copy())
+    out = v7.validity_gate(humans(25, seed=11), key=[1, 2, 3], grid_ms=1.0)
+    assert any(out[n]["gridded"]["auc"] < v7.GATE_AUC for n in ("D2_lr", "D2_rf", "D3", "D4"))
+    for n in ("D1_uniform", "D1_d3gen", "D2_lr", "D2_rf", "D3", "D4"):
+        o = out[n]
+        assert o["valid"] == bool(o["auc"] >= v7.GATE_AUC and o["human_machine_share"] <= v7.GATE_HUMAN_SHARE)
+    assert out["D2_lr"]["valid"] or out["D4"]["valid"]     # something valid that a gridded decision would flip
+
+
+
+def test_gate_survives_gridded_sessions_that_vanish(monkeypatch):
+    # every gridded synthetic session collapses to fewer than 2 gaps: counted, AUC None, validity unchanged
+    h = humans(25, seed=11)
+    base = v7.validity_gate(h, key=[1, 2, 3])
+    monkeypatch.setattr(v7, "gridded", lambda g, grid_ms: np.array([5.0]))
+    out = v7.validity_gate(h, key=[1, 2, 3])
+    for n in ("D1_uniform", "D1_d3gen", "D2_lr", "D2_rf", "D3", "D4"):
+        assert out[n]["gridded"]["auc"] is None and out[n]["gridded"]["no_score"] > 0
+        assert out[n]["valid"] == base[n]["valid"] and out[n]["auc"] == base[n]["auc"]
+
+
+def test_d4_fold_without_eligible_humans_stops_the_run():
+    with pytest.raises(ValueError):
+        v7.train_d4([np.full(10, 100.0) for _ in range(8)], np.random.default_rng(28))
+
+
+def test_gate_uses_exactly_the_conditions_keys(monkeypatch):
+    used = []
+    real = np.random.default_rng
+
+    def spy(seed=None):
+        used.append(int(seed) if np.ndim(seed) == 0 else [int(x) for x in seed])
+        return real(seed)
+    h = humans(25, seed=11)                     # made before the spy (numpy is one module)
+    monkeypatch.setattr(v7.np.random, "default_rng", spy)
+    v7.validity_gate(h, key=[1, 2, 3])
+    want = [[s, k + 1] for s in (v7.D2_SEED, v7.D3_SEED, v7.D4_SEED) for k in range(v7.N_FOLDS)]
+    want += [[s, k + 1, 1] for s in (v7.D2_SEED, v7.D3_SEED, v7.D4_SEED) for k in range(v7.N_FOLDS)]
+    got = [tuple(x) if isinstance(x, list) else (x,) for x in used if x != [1, 2, 3]]
+    assert sorted(got) == sorted(map(tuple, want)), [g for g in got if len(g) == 1]

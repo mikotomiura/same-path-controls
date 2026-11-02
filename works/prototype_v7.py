@@ -44,6 +44,10 @@ D2_SEED, D3_SEED = 42, 123
 D2_TREES, D3_TREES = 100, 300
 WINDOW = 70              # QUACK!-type window of consecutive gaps
 N_BINS = 8               # M3b and D3's conditional generator
+D4_SEED, D4_TREES = 28, 100   # amendment B4: the reduced BeCAPTCHA-Type
+D4_L = 30                # first 30 press-press gaps of a session
+D4_BW_MS = 1.0           # KDE bandwidth (the paper's sigma = 1.0, unit not stated)
+M3_DONORS = 40           # amendment B2: M3's donors drawn without replacement, one per M0 text
 GATE_AUC, GATE_HUMAN_SHARE = 0.90, 0.10
 MARGIN = 0.10            # headline equivalence margin
 N_BOOT = 2000
@@ -167,7 +171,8 @@ class D2:
     def proba(self, sessions: list[np.ndarray]) -> dict[str, np.ndarray]:
         """'machine' probabilities of both models; 'above_hist' = per session, the gaps left out of its histogram."""
         x, out = feature_matrix(sessions)
-        return {"D2_lr": self.lr.predict_proba(x)[:, 1], "D2_rf": self.rf.predict_proba(x)[:, 1], "above_hist": out}
+        return {"D2_lr": self.lr.predict_proba(x)[:, 1], "D2_rf": self.rf.predict_proba(x)[:, 1], "above_hist": out,
+                "D2_lr_logit": self.lr.decision_function(x)}   # amendment B9: the paired change also on the logit
 
 
 def train_d2(human: list[np.ndarray], rng: np.random.Generator) -> D2:
@@ -324,6 +329,75 @@ def train_d3(human: list[np.ndarray], rng: np.random.Generator) -> D3:
     return D3(rf)
 
 
+# ---------------------------------------------------------------- D4 (reduced BeCAPTCHA-Type, amendment B4)
+
+
+def d4_features(g: np.ndarray) -> np.ndarray | None:
+    """The first D4_L press-press gaps as they are (no scaling); None for a session with fewer (no D4 score)."""
+    g = check_gaps(g)
+    return g[:D4_L].copy() if g.size >= D4_L else None
+
+
+@dataclass
+class KDE1:
+    """The paper's Universal model on one feature: a Gaussian KDE (bandwidth D4_BW_MS) of pooled gaps; each draw is a
+    pooled gap plus N(0, bandwidth); a draw below 0 is drawn again and counted."""
+    pool: np.ndarray
+    redrawn: int = 0
+
+    def draw(self, n: int, rng: np.random.Generator) -> np.ndarray:
+        out = np.empty(n)
+        filled = 0
+        while filled < n:
+            k = n - filled
+            x = self.pool[rng.integers(0, self.pool.size, k)] + rng.normal(0.0, D4_BW_MS, k)
+            ok = x[x >= 0]
+            self.redrawn += int(k - ok.size)
+            out[filled:filled + ok.size] = ok
+            filled += ok.size
+        return out
+
+
+def fit_kde1(human: list[np.ndarray]) -> KDE1:
+    """Pooled first D4_L gaps of every human session with at least D4_L gaps (the segment D4 scores). With no such
+    session it raises: the run stops rather than reporting D4 on nothing."""
+    rows = [f for f in (d4_features(g) for g in human) if f is not None]
+    if not rows:
+        raise ValueError(f"no human session has {D4_L} gaps")
+    return KDE1(np.concatenate(rows))
+
+
+@dataclass
+class D4:
+    rf: object
+    kde: KDE1
+
+    def proba(self, sessions: list[np.ndarray]) -> np.ndarray:
+        """'machine' probability per session; NaN for a session with fewer than D4_L gaps (counted by the caller)."""
+        out = np.full(len(sessions), np.nan)
+        rows = [(i, f) for i, f in enumerate(d4_features(g) for g in sessions) if f is not None]
+        if rows:
+            out[[i for i, _ in rows]] = self.rf.predict_proba(np.array([f for _, f in rows]))[:, 1]
+        return out
+
+
+def d4_synthetic(n_sessions: int, kde: KDE1, rng: np.random.Generator) -> list[np.ndarray]:
+    return [kde.draw(D4_L, rng) for _ in range(n_sessions)]
+
+
+def train_d4(human: list[np.ndarray], rng: np.random.Generator) -> D4:
+    """Human sessions with at least D4_L gaps (class 0, their first D4_L gaps) against as many synthetic sessions of
+    D4_L gaps from the KDE fitted on them (class 1); RF of D4_TREES trees, scikit-learn defaults otherwise,
+    random_state D4_SEED. The caller passes numpy.random.default_rng(D4_SEED) or a fold's key."""
+    kde = fit_kde1(human)
+    xh = np.array([f for f in (d4_features(g) for g in human) if f is not None])
+    xm = np.array(d4_synthetic(len(xh), kde, rng))
+    x = np.concatenate([xh, xm])
+    y = np.concatenate([np.zeros(len(xh), dtype=int), np.ones(len(xm), dtype=int)])
+    rf = RandomForestClassifier(n_estimators=D4_TREES, random_state=D4_SEED).fit(x, y)
+    return D4(rf, kde)
+
+
 # ---------------------------------------------------------------- validity gate
 
 
@@ -347,7 +421,14 @@ def person_folds(n: int, key: list[int]) -> np.ndarray:
     return fold
 
 
-def validity_gate(human: list[np.ndarray], key: list[int] | None = None) -> dict:
+def gridded(g: np.ndarray, grid_ms: float) -> np.ndarray:
+    """A gap series with its press times (from 0) rounded to grid_ms, cleaned by v6's rule, gaps taken again
+    (amendment B5)."""
+    t = np.concatenate([[0.0], np.cumsum(check_gaps(g))])
+    return gaps_of(clean_times(quantise(t, grid_ms))[0])
+
+
+def validity_gate(human: list[np.ndarray], key: list[int] | None = None, grid_ms: float = 1.0) -> dict:
     """Within E: N_FOLDS folds by person; per fold D2 and D3 trained on the other folds with their synthetic sessions
     drawn there; the held-out humans scored against held-out synthetic sessions of matched length from the same
     generators (D2: Uniform(30, 80); D3: the three generators fitted on the training folds). D1 has no training and is
@@ -355,34 +436,66 @@ def validity_gate(human: list[np.ndarray], key: list[int] | None = None) -> dict
     and one share of held-out humans judged 'machine' per detector. A detector is 'valid' if AUC >= GATE_AUC and the
     share <= GATE_HUMAN_SHARE.
 
-    Random streams (choices of this file, not in the conditions): the folds from key [20261031, 7, 8]; in fold k the
-    training synthetic sessions of D2 from default_rng([D2_SEED, k]) and of D3 from default_rng([D3_SEED, k]), the
-    held-out synthetic sessions of D2 from default_rng([D2_SEED, k, 1]) and of D3 from default_rng([D3_SEED, k, 1])."""
+    Random streams (analysis_details.gate_streams): the folds from key [20261031, 7, 8]; in fold k the training
+    synthetic sessions of D2 from default_rng([D2_SEED, k + 1]) and of D3 from default_rng([D3_SEED, k + 1]), the
+    held-out synthetic sessions of D2 from default_rng([D2_SEED, k + 1, 1]) and of D3 from
+    default_rng([D3_SEED, k + 1, 1]) (amendment B10: [seed, 0] would repeat the full training stream of seed).
+
+    D4 (amendment B4) the same way: training synthetic from default_rng([D4_SEED, k + 1]), held-out from
+    default_rng([D4_SEED, k + 1, 1]), its KDE fitted on the training folds only, one held-out synthetic session per
+    held-out human session with at least D4_L gaps. out['D4']['no_score'] counts held-out humans with too few gaps;
+    out['D4']['redrawn'] the KDE draws below 0 drawn again, training and held-out apart.
+
+    Amendment B5 (descriptive): out[name]['gridded'] holds the AUC and the held-out human 'machine' share when the
+    same trained detectors score the held-out synthetic sessions with their press times rounded to grid_ms (KUPA's
+    effective resolution estimated from H0 of E; 1 ms if none is read). It does not decide validity."""
     key = key or [SEED, VERSION, 8]
     fold = person_folds(len(human), key)
     pooled: dict[str, dict[str, list]] = {d: {"score": [], "label": []}
-                                          for d in ("D1_uniform", "D1_d3gen", "D2_lr", "D2_rf", "D3")}
-    d3_short = 0
+                                          for d in ("D1_uniform", "D1_d3gen", "D2_lr", "D2_rf", "D3", "D4")}
+    pooled_g = {d: {"score": [], "label": []} for d in pooled}
+    d3_short = d4_short = 0
+    no_score_g = {d: 0 for d in ("D1_uniform", "D1_d3gen", "D2_lr", "D2_rf", "D3", "D4")}
+    redrawn = {"train": 0, "held_out": 0}
     for k in range(N_FOLDS):
         train = [g for g, f in zip(human, fold) if f != k]
         test = [g for g, f in zip(human, fold) if f == k]
-        d2 = train_d2(train, np.random.default_rng([D2_SEED, k]))
-        d3 = train_d3(train, np.random.default_rng([D3_SEED, k]))
-        syn2 = uniform_sessions([g.size for g in test], np.random.default_rng([D2_SEED, k, 1]))
-        syn3 = d3_synthetic(test, fit_generators(train), np.random.default_rng([D3_SEED, k, 1]))
+        d2 = train_d2(train, np.random.default_rng([D2_SEED, k + 1]))
+        d3 = train_d3(train, np.random.default_rng([D3_SEED, k + 1]))
+        syn2 = uniform_sessions([g.size for g in test], np.random.default_rng([D2_SEED, k + 1, 1]))
+        syn3 = d3_synthetic(test, fit_generators(train), np.random.default_rng([D3_SEED, k + 1, 1]))
+        d4 = train_d4(train, np.random.default_rng([D4_SEED, k + 1]))
+        kde_out = fit_kde1(train)
+        syn4 = d4_synthetic(sum(g.size >= D4_L for g in test), kde_out, np.random.default_rng([D4_SEED, k + 1, 1]))
+        redrawn["train"] += d4.kde.redrawn
+        redrawn["held_out"] += kde_out.redrawn
         lab = [0] * len(test) + [1] * len(test)
-        for name, sess in (("D1_uniform", test + syn2), ("D1_d3gen", test + syn3)):
-            pooled[name]["score"] += [-delta(g) for g in sess]
-            pooled[name]["label"] += lab
-        p2 = d2.proba(test + syn2)
-        for name in ("D2_lr", "D2_rf"):
-            pooled[name]["score"] += list(p2[name])
-            pooled[name]["label"] += lab
-        p3 = d3.proba(test + syn3)
-        ok = np.isfinite(p3)
-        d3_short += int((~ok).sum())
-        pooled["D3"]["score"] += list(p3[ok])
-        pooled["D3"]["label"] += list(np.array(lab)[ok])
+        g2, g3, g4 = ([gridded(g, grid_ms) for g in ss] for ss in (syn2, syn3, syn4))
+        # a gridded session left with fewer than 2 gaps has no D1 or D2 score: drop it and count it (all detectors)
+        for name_, gs in (("D1_uniform", g2), ("D2_lr", g2), ("D2_rf", g2), ("D1_d3gen", g3), ("D3", g3), ("D4", g4)):
+            no_score_g[name_] += sum(g.size < 2 for g in gs)
+        g2, g3, g4 = ([g for g in gs if g.size >= 2] for gs in (g2, g3, g4))
+        for pool, s2, s3, s4 in ((pooled, syn2, syn3, syn4), (pooled_g, g2, g3, g4)):
+            for name, ss in (("D1_uniform", s2), ("D1_d3gen", s3)):
+                pool[name]["score"] += [-delta(g) for g in test + ss]
+                pool[name]["label"] += [0] * len(test) + [1] * len(ss)
+            p2 = d2.proba(test + s2)
+            for name in ("D2_lr", "D2_rf"):
+                pool[name]["score"] += list(p2[name])
+                pool[name]["label"] += [0] * len(test) + [1] * len(s2)
+            for name, model, ss in (("D3", d3, s3), ("D4", d4, s4)):
+                p = model.proba(test + ss)
+                lab_m = [0] * len(test) + [1] * len(ss)
+                ok = np.isfinite(p)
+                if pool is pooled:
+                    if name == "D3":
+                        d3_short += int((~ok).sum())
+                    else:
+                        d4_short += int((~ok).sum())
+                else:
+                    no_score_g[name] += int((~ok[len(test):]).sum())   # gridded synthetic below the window (humans: no_score)
+                pool[name]["score"] += list(p[ok])
+                pool[name]["label"] += list(np.array(lab_m)[ok])
     out = {}
     for name, v in pooled.items():
         s, y = np.array(v["score"]), np.array(v["label"])
@@ -393,8 +506,18 @@ def validity_gate(human: list[np.ndarray], key: list[int] | None = None) -> dict
             machine = s[y == 0] > 0.5
         share = float(machine.mean())
         out[name] = {"auc": auc, "human_machine_share": share, "n_human": int((y == 0).sum()),
+                     "n_machine": int((y == 1).sum()),
                      "valid": bool(auc >= GATE_AUC and share <= GATE_HUMAN_SHARE)}
+        sg, yg = np.array(pooled_g[name]["score"]), np.array(pooled_g[name]["label"])
+        mg = sg[yg == 0] >= -DELTA_T if name.startswith("D1") else sg[yg == 0] > 0.5
+        both = (yg == 0).any() and (yg == 1).any()
+        out[name]["gridded"] = {"grid_ms": grid_ms, "auc": rank_auc(sg, yg) if both else None,   # None: one class empty
+                                "human_machine_share": float(mg.mean()) if mg.size else None,
+                                "n_human": int((yg == 0).sum()), "n_machine": int((yg == 1).sum()),
+                                "no_score": no_score_g[name]}   # gridded synthetic sessions without a score; B5: never decides
     out["D3"]["no_score"] = d3_short
+    out["D4"]["no_score"] = d4_short
+    out["D4"]["redrawn"] = redrawn
     out["D1"] = dict(out["D1_uniform"], against="Uniform(30, 80) (Condrey's baseline); D1_d3gen reported beside")
     return out
 
@@ -492,8 +615,9 @@ def wilson_interval(k: int, n: int, z: float = Z95) -> tuple[float, float]:
 def read_rule(diff_ci: tuple[float, float], disc_ci: tuple[float, float]) -> str:
     """The reading of detectors_C2.headline (decision 10, amendment A5), shared by the human rows (Tango and Wilson)
     and the machine_path rows (cluster bootstrap): 'not changed' needs the difference's interval inside
-    [-MARGIN, MARGIN] and the discordance's upper end at most MARGIN; 'responds' if an end of the difference's interval
-    is outside with the interval excluding 0, or the discordance's lower end is above MARGIN; else 'undecided'."""
+    [-MARGIN, MARGIN] and the discordance's upper end at most MARGIN; 'responds' (amendment B3: 'responds beyond 0.10')
+    if the whole of the difference's interval is beyond MARGIN on one side, or the discordance's lower end is above
+    MARGIN; else 'undecided'. 'changed from 0' is reported beside by changed_from_0."""
     return read_rule_route(diff_ci, disc_ci)[0]
 
 
@@ -507,11 +631,16 @@ def read_rule_route(diff_ci: tuple[float, float], disc_ci: tuple[float, float]) 
     dlo, dhi = disc_ci
     if lo >= -MARGIN - EPS_EDGE and hi <= MARGIN + EPS_EDGE and dhi <= MARGIN + EPS_EDGE:
         return "not changed", ""
-    by_diff = (lo < -MARGIN - EPS_EDGE or hi > MARGIN + EPS_EDGE) and (lo > 0 or hi < 0)
+    by_diff = lo > MARGIN + EPS_EDGE or hi < -MARGIN - EPS_EDGE   # amendment B3: the whole interval beyond the margin
     by_disc = dlo > MARGIN + EPS_EDGE
     if by_diff or by_disc:
         return "responds", "both" if by_diff and by_disc else ("difference" if by_diff else "discordance")
     return "undecided", ""
+
+
+def changed_from_0(diff_ci: tuple[float, float]) -> bool:
+    """Amendment B3, the first step: the difference's interval excludes 0 (it can stand with 'undecided')."""
+    return bool(diff_ci[0] > 0 or diff_ci[1] < 0)
 
 
 def headline(b: int, c: int, n: int) -> dict:
@@ -521,7 +650,8 @@ def headline(b: int, c: int, n: int) -> dict:
     dlo, dhi = wilson_interval(b + c, n)
     reading, route = read_rule_route((lo, hi), (dlo, dhi))
     return {"b": b, "c": c, "n": n, "difference": (b - c) / n, "tango_95": [lo, hi],
-            "discordance": (b + c) / n, "wilson_95": [dlo, dhi], "reading": reading, "route": route}
+            "discordance": (b + c) / n, "wilson_95": [dlo, dhi], "reading": reading, "route": route,
+            "changed_from_0": changed_from_0((lo, hi))}
 
 
 def machine_path_reading(before: np.ndarray, after: np.ndarray, cluster: np.ndarray, key: list[int]) -> dict:
@@ -572,7 +702,60 @@ def machine_path_reading(before: np.ndarray, after: np.ndarray, cluster: np.ndar
             "discordance": (b + c) / n,
             "bootstrap_95": {"difference": list(boot_d), "discordance": list(boot_s), "reading": r_boot},
             "effective_n_95": {"difference": [t_lo, t_hi], "discordance": [w_lo, w_hi], "reading": r_eff},
-            "reading": reading, "route": route}
+            "reading": reading, "route": route,
+            "changed_from_0": changed_from_0(boot_d) and changed_from_0((t_lo, t_hi))}   # common to both, as the reading
+
+
+def zero_flip_min_clusters(n_max: int = 1000) -> int:
+    """Amendment B8: the smallest effective number of clusters at which no flip (b = c = 0) reads 'not changed'."""
+    for n in range(1, n_max + 1):
+        if headline(0, 0, n)["reading"] == "not changed":
+            return n
+    raise ValueError("no n reads 'not changed'")
+
+
+def zero_flip_table(ns: range = range(10, 41)) -> list[dict]:
+    """Amendment B8, the design table of the supplement: per effective n, the zero-flip intervals and reading."""
+    return [{"n_eff": n, "tango_95": list(tango_interval(0, 0, n)), "wilson_95": list(wilson_interval(0, n)),
+             "reading": headline(0, 0, n)["reading"]} for n in ns]
+
+
+def enters_machine_general(n_clusters: int) -> bool:
+    """Amendment B8: a machine series enters a machine-side general statement only with enough clusters left."""
+    return n_clusters >= zero_flip_min_clusters()
+
+
+def machine_general(readings: dict[tuple[str, str, str], str], valid: dict[str, bool],
+                    n_clusters: dict[tuple[str, str, str], int], series: list[str],
+                    layers: tuple[str, ...] = ("hook", "page")) -> dict:
+    """Amendment B8: the machine-side general statement. readings[(detector, layer, series)] -> the machine_path
+    reading; valid[detector] from the gate; n_clusters[(detector, layer, series)] the clusters left in that cell after
+    removing its missing judgments (missing judgments differ by detector and layer, e.g. D4's short sessions). A
+    series enters only if every valid detector on every layer has a reading and enough clusters
+    (enters_machine_general) in its cell; a cell without a count raises. The statement holds if every entering series
+    reads 'not changed' in every such cell. Series kept out are listed apart, with their 'responds' cells, so that
+    the narrowing of the statement stays visible."""
+    vd = [d for d in valid if valid[d]]
+    cells = {s_: [(d, la, s_) for d in vd for la in layers] for s_ in series}
+    missing = [list(c) for s_ in series for c in cells[s_] if c not in readings or c not in n_clusters]
+    if missing:
+        raise ValueError(f"readings or cluster counts missing: {missing}")
+    enter = [s_ for s_ in series if all(enters_machine_general(n_clusters[c]) for c in cells[s_])]
+    kept = [s_ for s_ in series if s_ not in enter]
+    general = bool(vd) and bool(enter) and all(readings[c] == "not changed" for s_ in enter for c in cells[s_])
+    responds = [list(c) for s_ in enter for c in cells[s_] if readings[c] == "responds"]
+    responds_kept = [list(c) for s_ in kept for c in cells[s_] if readings[c] == "responds"]
+    return {"entering": enter, "kept_out": kept, "general_not_moved": general, "responds": responds,
+            "responds_kept_out": responds_kept}
+
+
+def saturation_share(p: np.ndarray) -> float:
+    """Amendment B9: the share of scored sessions with a 'machine' probability at most 0.01 or at least 0.99."""
+    p = np.asarray(p, dtype=float)
+    p = p[np.isfinite(p)]
+    if p.size == 0:
+        raise ValueError("no score")
+    return float(((p <= 0.01) | (p >= 0.99)).mean())
 
 
 def not_changed_probability(rate: float, n: int) -> float:
@@ -600,7 +783,7 @@ def threshold_margin(detector: str, scores: np.ndarray) -> np.ndarray:
     s = np.asarray(scores, dtype=float)
     if detector == "D1":
         return s - DELTA_T
-    if detector in ("D2_lr", "D2_rf", "D3"):
+    if detector in ("D2_lr", "D2_rf", "D3", "D4"):
         return 0.5 - s
     raise ValueError(f"unknown detector: {detector}")
 
@@ -621,7 +804,7 @@ FLOOR_MIN_PERSONS = 8   # complete triplets (H0, H1_idle, H1_rep) needed to read
 
 
 LAYERS = ("hook", "page")
-DETECTORS = ("D1", "D2_lr", "D2_rf", "D3")
+DETECTORS = ("D1", "D2_lr", "D2_rf", "D3", "D4")   # D4 by amendment B4
 
 
 def across(readings: dict[tuple[str, str], str], valid: dict[str, bool], layers: tuple[str, ...] = LAYERS,
@@ -667,12 +850,24 @@ def paired_prob_change(before: np.ndarray, after: np.ndarray, key: list[int]) ->
 # ---------------------------------------------------------------- M3 generators
 
 
+def m3_donors(n_e: int) -> np.ndarray:
+    """Amendment B2 (key changed by B10): the M3_DONORS donors of the M0 texts, drawn from E without replacement as
+    default_rng([20261031, 7, 13]).permutation(|E|)[:40]; text t gets the t-th. The caller passes E in the draw
+    order of persons.pool (the index refers to that order). B10: the key [20261031, 7, 3] of B2 gave the same
+    stream as text 0's [20261031, 7, 3, 0] (numpy's SeedSequence treats a trailing 0 as absent)."""
+    if n_e < M3_DONORS:
+        raise ValueError(f"E holds {n_e} persons, fewer than {M3_DONORS} donors")
+    return np.random.default_rng([SEED, VERSION, 13]).permutation(n_e)[:M3_DONORS]
+
+
 def m3(text: int, n_gaps: int, donors: list[np.ndarray]) -> dict:
-    """M3a and M3b for M0 text `text`: one donor drawn from E by default_rng([20261031, 7, 3, text]); with the same
-    generator, M3a's gaps (independent draws with replacement from the donor's gaps) and then M3b's (CondBins on the
-    donor's one session). Returns the donor index, both gap series and M3b's number of fallbacks."""
+    """M3a and M3b for M0 text `text` (0 to 39): its donor from m3_donors (amendment B2); with the generator
+    default_rng([20261031, 7, 3, text]), M3a's gaps (independent draws with replacement from the donor's gaps) and then
+    M3b's (CondBins on the donor's one session). Returns the donor index, both gap series and M3b's fallbacks."""
+    if not 0 <= text < M3_DONORS:
+        raise ValueError(f"text must be in 0..{M3_DONORS - 1}")
+    donor = int(m3_donors(len(donors))[text])
     rng = np.random.default_rng([SEED, VERSION, 3, text])
-    donor = int(rng.integers(0, len(donors)))
     g = check_gaps(donors[donor])
     a = rng.choice(g, n_gaps, replace=True)
     bsr, fb = CondBins([g]).draw(n_gaps, rng)
