@@ -602,3 +602,178 @@ def test_component_bootstrap_resamples_whole_components():
     comp = np.repeat(np.arange(4), 10)
     lo, hi, skipped = v7.component_bootstrap_auc(score, label, comp, np.random.default_rng(0))
     assert lo == 0.0 and hi == 1.0 and skipped > 0
+
+
+# ---------------------------------------------------------------- amendments A2-A5 (2026-11-02, before any value)
+
+
+def test_conditions_name_the_amendments():
+    h = C7["detectors_C2"]["headline"]
+    assert "discordance (b + c) / n at most 0.10" in h and "lower end of the discordance's Wilson interval above 0.10" in h
+    assert "machine_path" in C7["pairs"] and "cluster bootstrap" in C7["detectors_C2"]["count"]
+    assert "[20261031, 7, 11, layer, detector, series]" in C7["detectors_C2"]["count"]
+    assert "no equivalence reading" in C7["pairs"]["replay_repeat"]
+
+
+def test_wilson_interval_known_values():
+    lo, hi = v7.wilson_interval(0, 40)
+    z2 = v7.Z95 ** 2
+    assert lo == 0.0 and hi == pytest.approx(z2 / (40 + z2))
+    assert round(hi, 3) == 0.088   # the value written in the conditions
+    lo, hi = v7.wilson_interval(10, 40)
+    assert (round(lo, 3), round(hi, 3)) == (0.142, 0.402)   # by hand: mid 0.2719, half 0.1300
+    lo2, hi2 = v7.wilson_interval(30, 40)
+    assert lo2 == pytest.approx(1 - hi) and hi2 == pytest.approx(1 - lo)
+    with pytest.raises(ValueError):
+        v7.wilson_interval(5, 4)
+
+
+def test_headline_discordance_route():
+    # b = c = 5: the difference is 0 but a quarter of the persons swap (R3 F5 of attack-me round 1)
+    h = v7.headline(5, 5, 40)
+    assert h["difference"] == 0 and h["reading"] == "responds" and h["wilson_95"][0] > v7.MARGIN
+    # one flip must not become 'responds' through the discordance (its upper end 0.129 > 0.10, lower end small)
+    assert v7.headline(1, 0, 40)["reading"] == "undecided"
+    assert v7.headline(2, 2, 40)["reading"] == "undecided"
+    assert v7.headline(0, 0, 40)["reading"] == "not changed"
+
+
+def test_read_rule_requires_both_for_not_changed():
+    assert v7.read_rule((-0.05, 0.05), (0.0, 0.08)) == "not changed"
+    assert v7.read_rule((-0.05, 0.05), (0.0, 0.12)) == "undecided"
+    assert v7.read_rule((0.02, 0.15), (0.03, 0.2)) == "responds"
+    assert v7.read_rule((-0.05, 0.05), (0.11, 0.3)) == "responds"
+    assert v7.read_rule((-0.15, 0.05), (0.0, 0.3)) == "undecided"
+
+
+def test_machine_path_reading():
+    n = 40
+    before = np.ones(n, dtype=bool)
+    cluster = np.arange(n) // 4
+    out = v7.machine_path_reading(before, before.copy(), cluster, [1])
+    assert (out["b"], out["c"], out["n"], out["n_clusters"]) == (0, 0, 40, 10)
+    # no flip in 10 clusters: the bootstrap interval degenerates to [0, 0], the effective-n interval (n = 10) does not
+    assert out["bootstrap_95"]["difference"] == [0.0, 0.0] and out["reading"] == "undecided"
+    out40 = v7.machine_path_reading(before, before.copy(), np.arange(n), [1])
+    assert out40["reading"] == "not changed"   # 40 independent sessions: as the human side with b = c = 0
+    after2 = before.copy()
+    after2[:20] = False          # half of the machine sessions now judged human (c = 20)
+    out2 = v7.machine_path_reading(before, after2, np.arange(n), [1])
+    assert out2["c"] == 20 and out2["difference"] == -0.5 and out2["reading"] == "responds"
+    assert out2["bootstrap_95"]["difference"][1] < 0 and out2["route"] == "both"
+    with pytest.raises(TypeError):
+        v7.machine_path_reading(before.astype(float), before, cluster, [1])
+    with pytest.raises(ValueError):
+        v7.machine_path_reading(before, before, cluster[:-1], [1])
+
+
+def test_machine_path_one_flip_is_not_easier_than_the_human_side():
+    # code review HIGH (2026-11-02): with the bootstrap alone one flip read 'not changed'
+    n = 40
+    before = np.ones(n, dtype=bool)
+    after = before.copy()
+    after[0] = False
+    for cluster in (np.arange(n), np.arange(n) // 4):
+        out = v7.machine_path_reading(before, after, cluster, [1])
+        assert out["reading"] == v7.headline(0, 1, 40)["reading"] == "undecided"
+
+
+def test_machine_path_few_clusters_cannot_decide():
+    n = 40
+    before = np.ones(n, dtype=bool)
+    after = before.copy()
+    after[:10] = False
+    one = v7.machine_path_reading(before, after, np.zeros(n, dtype=int), [1])
+    eff = one["effective_n_95"]["difference"]
+    assert one["n_clusters"] == 1 and eff[1] - eff[0] > 1.5 and one["reading"] == "undecided"
+    assert one["bootstrap_95"]["reading"] == "responds"   # the degenerate bootstrap alone would have read 'responds'
+    with pytest.raises(TypeError):
+        v7.machine_path_reading(before, after, np.where(np.arange(n) < 5, np.nan, 1.0), [1])
+    two = v7.machine_path_reading(before, after, np.arange(n) % 2, [1])
+    assert two["reading"] == "undecided"
+
+
+def test_route_and_closed_bounds():
+    assert v7.headline(12, 0, 40)["route"] in ("difference", "both")
+    assert v7.headline(5, 5, 40)["route"] == "discordance"
+    assert v7.headline(0, 0, 40)["route"] == ""
+    # an end equal to the margin up to rounding is inside (closed bounds)
+    assert v7.read_rule((-0.1, 0.1), (0.0, 0.1 + 1e-15)) == "not changed"
+    assert v7.read_rule((-0.05, 0.05), (0.1, 0.3)) == "undecided"
+    assert v7.read_rule((-0.05, 0.05), (0.1 + 1e-9, 0.3)) == "responds"
+
+
+def test_headline_symmetry_and_conditions_numbers():
+    for b, c in ((3, 0), (5, 5), (12, 1), (0, 0)):
+        h, g = v7.headline(b, c, 40), v7.headline(c, b, 40)
+        assert h["reading"] == g["reading"] and h["wilson_95"] == g["wilson_95"]
+    h1 = v7.headline(1, 0, 40)
+    assert [round(x, 3) for x in h1["tango_95"]] == [-0.065, 0.129] and h1["reading"] == "undecided"
+    assert [round(x, 3) for x in v7.tango_interval(1, 0, 40, float(v7.stats.norm.ppf(0.95)))] == [-0.040, 0.105]
+    assert "[-0.040, 0.105]" in C7["detectors_C2"]["headline"]
+
+
+def test_threshold_margin_and_floor():
+    m = v7.threshold_margin("D1", np.array([1.0, 0.269, np.nan]))
+    assert m[0] == pytest.approx(0.731) and m[1] == 0 and np.isnan(m[2])
+    assert v7.threshold_margin("D3", np.array([0.2]))[0] == pytest.approx(0.3)
+    with pytest.raises(ValueError):
+        v7.threshold_margin("D9", np.array([0.2]))
+    h0 = np.linspace(0.1, 0.4, 10)
+    h1 = h0 + 0.2
+    rep = h1 + 0.001
+    assert v7.above_floor(h0, h1, rep, [5])["above_floor"]
+    assert not v7.above_floor(h0, h0 + 0.001, h0 + 0.2, [5])["above_floor"]
+    # mean of the difference positive but its interval crossing 0: not above the floor (the interval decides)
+    ch = np.array([0.30, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    rep_ch = np.array([0.0, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02])
+    out = v7.above_floor(np.zeros(10), ch, ch + rep_ch, [5])
+    assert out["mean"] > 0 and out["ci95"][0] <= 0 and not out["above_floor"]
+
+
+def test_not_changed_probability_matches_the_closed_form():
+    # with n = 40 only b = c = 0 reads 'not changed', so the probability is (1 - rate) ** 40
+    for r in (0.0, 0.005, 0.01, 0.02, 0.05):
+        assert v7.not_changed_probability(r, 40) == pytest.approx((1 - r) ** 40)
+    assert round(v7.not_changed_probability(0.02, 40), 3) == 0.446
+    assert v7.not_changed_probability(1.0, 40) == 0.0
+
+
+def test_not_changed_probability_brute_force_other_n():
+    # a direct sum over (b, c) of the headline reading, independent of the closed form
+    n, r = 120, 0.01
+    want = 0.0
+    for b in range(n + 1):
+        for c in range(n - b + 1):
+            if v7.headline(b, c, n)["reading"] == "not changed":
+                want += (math.comb(n, b) * math.comb(n - b, c) * (r / 2) ** (b + c) * (1 - r) ** (n - b - c))
+    assert v7.not_changed_probability(r, n) == pytest.approx(want, rel=1e-9)
+
+
+def test_machine_path_disagreeing_intervals_read_undecided():
+    # Codex round 2: the two pairs of intervals are read separately and only a common reading is taken.
+    # 10 flips all in one cluster of 10 sessions, 30 other singleton clusters: the effective-n interval reads
+    # 'responds' while the cluster bootstrap (the big cluster is missing in about a third of the resamples) does not.
+    n = 40
+    before = np.zeros(n, dtype=bool)
+    after = before.copy()
+    after[:10] = True
+    cluster = np.concatenate([np.zeros(10, dtype=int), np.arange(1, 31)])
+    out = v7.machine_path_reading(before, after, cluster, [1])
+    assert out["effective_n_95"]["reading"] == "responds"
+    assert out["bootstrap_95"]["reading"] != "responds"
+    assert out["reading"] == "undecided" and out["route"] == ""
+
+
+def test_threshold_equality_semantics():
+    # D1: 'human' needs delta > 0.269, so a margin of 0 is 'machine'; D2/D3: 'machine' needs p > 0.5, margin 0 is human
+    assert v7.threshold_margin("D1", np.array([v7.DELTA_T]))[0] == 0 and v7.d1_machine is not None
+    assert v7.threshold_margin("D2_lr", np.array([0.5]))[0] == 0
+    j_before, _, _ = v7.judged_pairs(np.array([0.5]), np.array([0.5]))
+    assert not j_before[0]       # p = 0.5 is judged human
+
+
+def test_floor_needs_enough_persons():
+    h0 = np.array([0.1, 0.2, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan])
+    out = v7.above_floor(h0, h0 + 0.3, h0 + 0.3001, [5])
+    assert out["n"] == 2 and out["above_floor"] is None

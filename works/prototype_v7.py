@@ -478,17 +478,146 @@ def judged_pairs(p_before: np.ndarray, p_after: np.ndarray) -> tuple[np.ndarray,
     return a[ok] > 0.5, b[ok] > 0.5, int((~ok).sum())
 
 
+def wilson_interval(k: int, n: int, z: float = Z95) -> tuple[float, float]:
+    """Wilson's score interval of a proportion k / n (amendment A5: the discordance (b + c) / n)."""
+    if n <= 0 or not 0 <= k <= n:
+        raise ValueError("need 0 <= k <= n, n > 0")
+    p = k / n   # k and n may be non-integer (machine_path_reading's effective counts)
+    den = 1.0 + z * z / n
+    mid = (p + z * z / (2 * n)) / den
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
+    return max(0.0, mid - half), min(1.0, mid + half)
+
+
+def read_rule(diff_ci: tuple[float, float], disc_ci: tuple[float, float]) -> str:
+    """The reading of detectors_C2.headline (decision 10, amendment A5), shared by the human rows (Tango and Wilson)
+    and the machine_path rows (cluster bootstrap): 'not changed' needs the difference's interval inside
+    [-MARGIN, MARGIN] and the discordance's upper end at most MARGIN; 'responds' if an end of the difference's interval
+    is outside with the interval excluding 0, or the discordance's lower end is above MARGIN; else 'undecided'."""
+    return read_rule_route(diff_ci, disc_ci)[0]
+
+
+EPS_EDGE = 1e-12   # the bounds are closed: an interval end equal to MARGIN (up to rounding) is inside
+
+
+def read_rule_route(diff_ci: tuple[float, float], disc_ci: tuple[float, float]) -> tuple[str, str]:
+    """read_rule with the route of a 'responds': 'difference' (Tango's or the bootstrap interval of (b - c) / n),
+    'discordance' (the lower end of (b + c) / n above MARGIN) or 'both'; '' for the other readings."""
+    lo, hi = diff_ci
+    dlo, dhi = disc_ci
+    if lo >= -MARGIN - EPS_EDGE and hi <= MARGIN + EPS_EDGE and dhi <= MARGIN + EPS_EDGE:
+        return "not changed", ""
+    by_diff = (lo < -MARGIN - EPS_EDGE or hi > MARGIN + EPS_EDGE) and (lo > 0 or hi < 0)
+    by_disc = dlo > MARGIN + EPS_EDGE
+    if by_diff or by_disc:
+        return "responds", "both" if by_diff and by_disc else ("difference" if by_diff else "discordance")
+    return "undecided", ""
+
+
 def headline(b: int, c: int, n: int) -> dict:
-    """Two-sided equivalence (decision 10): Tango's interval inside [-MARGIN, MARGIN] -> 'not changed'; an end outside
-    with the interval excluding 0 -> 'responds'; else 'undecided'. Flips are reported beside."""
+    """Two-sided equivalence (decision 10) with the discordance as a second route (amendment A5): Tango's interval of
+    (b - c) / n and Wilson's interval of (b + c) / n, read by read_rule. Flips are reported beside."""
     lo, hi = tango_interval(b, c, n)
-    if lo >= -MARGIN and hi <= MARGIN:
-        r = "not changed"
-    elif (lo < -MARGIN or hi > MARGIN) and (lo > 0 or hi < 0):
-        r = "responds"
-    else:
-        r = "undecided"
-    return {"b": b, "c": c, "n": n, "difference": (b - c) / n, "tango_95": [lo, hi], "reading": r}
+    dlo, dhi = wilson_interval(b + c, n)
+    reading, route = read_rule_route((lo, hi), (dlo, dhi))
+    return {"b": b, "c": c, "n": n, "difference": (b - c) / n, "tango_95": [lo, hi],
+            "discordance": (b + c) / n, "wilson_95": [dlo, dhi], "reading": reading, "route": route}
+
+
+def machine_path_reading(before: np.ndarray, after: np.ndarray, cluster: np.ndarray, key: list[int]) -> dict:
+    """The machine_path rows (amendment A2): paired 'machine' judgments of the same machine sessions, planned (before)
+    and recorded (after), with their clusters (texts, prompts or donors). b, c, n; the difference (b - c) / n and the
+    discordance (b + c) / n with 95% percentile intervals over N_BOOT resamples of clusters with replacement (every
+    session of a drawn cluster enters, so sessions are weighted equally), and the human side's intervals (Tango's for
+    the difference, Wilson's for the discordance) computed with the number of clusters as the effective n and b, c
+    scaled to it. The row is read by read_rule on each pair of intervals separately; their common reading is the
+    row's reading, and if they disagree the row reads 'undecided' (code review and Codex, 2026-11-02: the bootstrap
+    alone let one flip read 'not changed', and a hull of the two could create a 'responds' that neither reads). One
+    flip of 40 reads 'undecided', and one cluster gives an effective-n interval wider than 1.5. Cluster ids must be
+    finite (a NaN id would drop rows from the bootstrap silently). Only boolean
+    judgments are accepted (remove missing ones first, e.g. by judged_pairs). The key is [20261031, 7, 11, layer,
+    detector, series] with layer, detector as in analysis_details.keys and series 0 M0, 1 M1_8B, 2 M1_14B,
+    3 M1_replay of 8B, 4 M1_replay of 14B, 5 M2_8B, 6 M2_14B, 7 M3a, 8 M3b."""
+    before, after, cluster = np.asarray(before), np.asarray(after), np.asarray(cluster)
+    if before.dtype != bool or after.dtype != bool:
+        raise TypeError("judgments must be boolean arrays")
+    if cluster.dtype.kind not in "iu":
+        raise TypeError("cluster ids must be integers (no NaN or missing id)")
+    if before.ndim != 1 or before.shape != after.shape or cluster.shape != before.shape:
+        raise ValueError("before, after and cluster must be 1-d arrays of the same sessions")
+    b, c, n = flips(before, after)
+    if n == 0:
+        raise ValueError("no pair")
+    up = (~before & after).astype(float)
+    down = (before & ~after).astype(float)
+    ids = np.unique(cluster)
+    rows = [np.flatnonzero(cluster == i) for i in ids]
+    rng = np.random.default_rng(key)
+    diff = np.empty(N_BOOT)
+    disc = np.empty(N_BOOT)
+    for k in range(N_BOOT):
+        idx = np.concatenate([rows[i] for i in rng.integers(0, ids.size, ids.size)])
+        diff[k] = (up[idx] - down[idx]).mean()
+        disc[k] = (up[idx] + down[idx]).mean()
+    boot_d = (float(np.percentile(diff, 2.5)), float(np.percentile(diff, 97.5)))
+    boot_s = (float(np.percentile(disc, 2.5)), float(np.percentile(disc, 97.5)))
+    n_eff = float(ids.size)
+    t_lo, t_hi = tango_interval(b * n_eff / n, c * n_eff / n, n_eff)
+    w_lo, w_hi = wilson_interval((b + c) * n_eff / n, n_eff)
+    r_boot, route_boot = read_rule_route(boot_d, boot_s)
+    r_eff, route_eff = read_rule_route((t_lo, t_hi), (w_lo, w_hi))
+    reading = r_boot if r_boot == r_eff else "undecided"
+    route = route_eff if reading == "responds" else ""
+    return {"b": b, "c": c, "n": n, "n_clusters": int(ids.size), "difference": (b - c) / n,
+            "discordance": (b + c) / n,
+            "bootstrap_95": {"difference": list(boot_d), "discordance": list(boot_s), "reading": r_boot},
+            "effective_n_95": {"difference": [t_lo, t_hi], "discordance": [w_lo, w_hi], "reading": r_eff},
+            "reading": reading, "route": route}
+
+
+def not_changed_probability(rate: float, n: int) -> float:
+    """Design table of amendment A5: the probability that one cell reads 'not changed' when each person flips with
+    probability `rate`, half each way (b and c multinomial), computed by enumerating every (b, c)."""
+    if not 0 <= rate <= 1 or n <= 0:
+        raise ValueError("need 0 <= rate <= 1 and n > 0")
+    if rate == 1:   # every person flips (b + c = n > 0): log1p(-1) is not defined, the cells are counted directly
+        return float(sum(math.comb(n, b) * 0.5 ** n for b in range(n + 1) if headline(b, n - b, n)["reading"] == "not changed"))
+    half = rate / 2
+    total = 0.0
+    for b in range(n + 1):
+        for c in range(n - b + 1):
+            if headline(b, c, n)["reading"] != "not changed":
+                continue
+            total += math.exp(math.lgamma(n + 1) - math.lgamma(b + 1) - math.lgamma(c + 1) - math.lgamma(n - b - c + 1)
+                              + (b + c) * math.log(half) + (n - b - c) * math.log1p(-rate)) if half > 0 else float(b == c == 0)
+    return total
+
+
+def threshold_margin(detector: str, scores: np.ndarray) -> np.ndarray:
+    """Each session's margin to its detector's threshold on the 'human' side (amendment A4): D1 delta - 0.269, D2 and
+    D3 0.5 - 'machine' probability; NaN kept (no score). Positive = judged human. A margin of exactly 0 means 'machine'
+    for D1 ('human' needs delta > 0.269) and 'human' for D2 and D3 ('machine' needs probability > 0.5)."""
+    s = np.asarray(scores, dtype=float)
+    if detector == "D1":
+        return s - DELTA_T
+    if detector in ("D2_lr", "D2_rf", "D3"):
+        return 0.5 - s
+    raise ValueError(f"unknown detector: {detector}")
+
+
+def above_floor(h0: np.ndarray, h1: np.ndarray, h1_rep: np.ndarray, key: list[int]) -> dict:
+    """The floor of pairs.replay_repeat (amendment A3, made explicit after Codex's point 4): on the same persons (the
+    H1_rep ones), the per-person absolute score change H0 -> H1_idle against H1_idle -> H1_rep; 'above the floor' if
+    the 95% bootstrap interval of the mean of |H1 - H0| - |H1_rep - H1| lies above 0."""
+    h0, h1, h1_rep = (np.asarray(x, dtype=float) for x in (h0, h1, h1_rep))
+    if not h0.shape == h1.shape == h1_rep.shape or h0.ndim != 1:
+        raise ValueError("h0, h1 and h1_rep must be 1-d arrays of the same persons")
+    out = paired_prob_change(np.abs(h1_rep - h1), np.abs(h1 - h0), key)
+    out["above_floor"] = out["ci95"][0] > 0 if out["n"] >= FLOOR_MIN_PERSONS else None
+    return out
+
+
+FLOOR_MIN_PERSONS = 8   # complete triplets (H0, H1_idle, H1_rep) needed to read the floor; else None (not read)
 
 
 LAYERS = ("hook", "page")
@@ -519,8 +648,9 @@ def across(readings: dict[tuple[str, str], str], valid: dict[str, bool], layers:
 
 
 def paired_prob_change(before: np.ndarray, after: np.ndarray, key: list[int]) -> dict:
-    """Mean change of the 'machine' probability (after - before) with a 95% percentile interval over N_BOOT resamples
-    of persons (pairs with a NaN removed and counted)."""
+    """Mean change of a score (after - before) with a 95% percentile interval over N_BOOT resamples of persons (pairs
+    with a NaN removed and counted). Used for the 'machine' probability of D2 and D3 and, by amendment A4, for D1's
+    delta and for the floor H1_idle against H1_rep (amendment A3)."""
     before, after = np.asarray(before, dtype=float), np.asarray(after, dtype=float)
     if before.ndim != 1 or before.shape != after.shape:
         raise ValueError("before and after must be 1-d arrays of the same persons")
