@@ -712,7 +712,9 @@ def test_headline_symmetry_and_conditions_numbers():
     h1 = v7.headline(1, 0, 40)
     assert [round(x, 3) for x in h1["tango_95"]] == [-0.065, 0.129] and h1["reading"] == "undecided"
     assert [round(x, 3) for x in v7.tango_interval(1, 0, 40, float(v7.stats.norm.ppf(0.95)))] == [-0.040, 0.105]
-    assert "[-0.040, 0.105]" in C7["detectors_C2"]["headline"]
+    # amendment B11: the conditions now state the n = 80 design (the 90% check: three flips of 80)
+    assert [round(x, 3) for x in v7.tango_interval(3, 0, 80, float(v7.stats.norm.ppf(0.95)))] == [0.004, 0.090]
+    assert "[0.004, 0.090]" in C7["detectors_C2"]["headline"]
 
 
 def test_threshold_margin_and_floor():
@@ -1077,3 +1079,103 @@ def test_gate_uses_exactly_the_conditions_keys(monkeypatch):
     want += [[s, k + 1, 1] for s in (v7.D2_SEED, v7.D3_SEED, v7.D4_SEED) for k in range(v7.N_FOLDS)]
     got = [tuple(x) if isinstance(x, list) else (x,) for x in used if x != [1, 2, 3]]
     assert sorted(got) == sorted(map(tuple, want)), [g for g in got if len(g) == 1]
+
+
+# ---------------------------------------------------------------- amendment B11 (after attack-me round 3)
+
+
+def test_b11_reading_probabilities_sum_and_known_values():
+    for n in (40, 80):
+        for r in (0.0, 0.02, 0.10):
+            pr = v7.reading_probabilities(r, n)
+            assert sum(pr.values()) == pytest.approx(1.0, abs=1e-9)
+            assert pr["not changed"] == pytest.approx(v7.not_changed_probability(r, n), abs=1e-9)
+    assert round(v7.reading_probabilities(0.02, 80)["not changed"], 2) == 0.78
+    assert round(v7.reading_probabilities(0.10, 40)["responds"], 3) == 0.042
+
+
+def test_b11_design_numbers_in_the_conditions():
+    h = C7["detectors_C2"]["headline"]
+    assert "[-0.046, 0.046]" in h and "[-0.022, 0.087]" in h and "[-0.010, 0.105]" in h
+    assert v7.headline(2, 0, 80)["reading"] == "not changed" and v7.headline(3, 0, 80)["reading"] == "undecided"
+    assert [round(x, 3) for x in v7.headline(0, 0, 80)["tango_95"]] == [-0.046, 0.046]
+
+
+def test_b11_boundary_readings():
+    out = v7.boundary_readings(0, 0, 78, 2)
+    assert out["complete"] == "not changed" and out["missing_as_no_flip"] == "not changed"
+    assert out["missing_as_b"] == "not changed"             # 2 of 80 one way still reads 'not changed'
+    assert v7.boundary_readings(0, 0, 77, 3)["missing_as_b"] == "undecided"
+    assert v7.boundary_readings(0, 0, 77, 3)["missing_as_c"] == "undecided"
+    assert v7.boundary_readings(0, 0, 77, 3)["missing_as_no_flip"] == "not changed"
+    z = v7.boundary_readings(1, 0, 80, 0)
+    assert z["complete"] == z["missing_as_no_flip"] == z["missing_as_b"] == z["missing_as_c"] == "not changed"
+    allmiss = v7.boundary_readings(0, 0, 0, 80)
+    assert allmiss["complete"] is None and allmiss["missing_as_no_flip"] == "not changed"
+    with pytest.raises(ValueError):
+        v7.boundary_readings(0, 0, 10, -1)
+
+
+def test_b11_grid_note_only_from_the_auc():
+    g = {"D1_uniform": {"gridded": {"auc": 0.89}}, "D1_d3gen": {"gridded": {"auc": 0.99}},
+         "D2_lr": {"gridded": {"auc": 0.90}}, "D3": {"gridded": {"auc": None}}, "D4": {"gridded": {"auc": float("nan")}}}
+    assert v7.grid_note(g, "D1") == "note"          # D1 is read on D1_uniform, not D1_d3gen
+    assert v7.grid_note(g, "D2_lr") == "no note"    # 0.90 is not below the gate
+    assert v7.grid_note(g, "D3") == "unknown" and v7.grid_note(g, "D4") == "unknown"
+
+
+def test_b11_executable_plan_is_monotone_and_keeps_order():
+    w = np.array([0.0, 10.0, 25.0, 18.0, 30.0, 29.0, 40.0])     # token arrived early: wished times go back
+    e = v7.executable_plan(w)
+    assert e.tolist() == [0, 10, 25, 25, 30, 30, 40] and np.all(np.diff(e) >= 0)
+    assert v7.check_gaps(np.diff(e)).min() == 0               # gaps are never negative
+    with pytest.raises(ValueError):
+        v7.check_gaps(np.diff(w))                            # the wished times would have stopped the analysis
+
+
+def test_b11_floor_on_absolute_changes():
+    before = np.zeros(10)
+    after = np.array([0.05, -0.05] * 5)                      # signed mean 0, absolute mean 0.05
+    out = v7.floor_abs_change(before, after, [1])
+    assert out["bias"]["mean"] == pytest.approx(0.0) and out["mean_abs"] == pytest.approx(0.05) and out["passes"] is False
+    assert v7.floor_abs_change(before, before + 0.01, [1])["passes"] is True
+    assert v7.floor_abs_change(before, before + 0.02, [1])["passes"] is True        # the limit is inside
+    assert v7.floor_abs_change(before, before + 0.0201, [1])["passes"] is False
+    gap = after.copy()
+    gap[:3] = np.nan                                                               # 7 complete: not read, counted
+    o = v7.floor_abs_change(before, gap, [1])
+    assert o["passes"] is None and o["n"] == 7 and o["removed"] == 3
+    with pytest.raises(ValueError):
+        v7.floor_abs_change(before, np.full(10, np.nan), [1])
+
+
+def test_b11_e_split_holds_the_donors_out():
+    donors, train = v7.e_split(220)
+    assert donors.size == 40 and train.size == 180
+    assert not set(donors) & set(train) and set(donors) | set(train) == set(range(220))
+    assert np.array_equal(donors, v7.m3_donors(220))
+
+
+def test_b11_conditions_record_the_amendments():
+    assert "first 80 of the pool" in C7["persons"]["replay_H"] and "first 300 eligible" in C7["persons"]["pool"]
+    assert "E_train" in C7["persons"]["estimation_E"] and "P_nohook" in C7["series"]
+    assert "executable plan" in C7["series"]["M1_8B and M1_14B"] and "mean over persons of the absolute" in C7["prediction"]
+
+
+def test_b11_design_numbers_computed():
+    r = lambda h: [round(x, 3) for x in h["tango_95"]]
+    assert r(v7.headline(2, 0, 80)) == [-0.022, 0.087] and r(v7.headline(3, 0, 80)) == [-0.010, 0.105]
+    assert r(v7.headline(1, 1, 80)) == [-0.057, 0.057] and r(v7.headline(1, 0, 80)) == [-0.034, 0.067]
+    assert [round(x, 3) for x in v7.headline(1, 1, 80)["wilson_95"]] == [0.007, 0.087]
+    assert round(v7.reading_probabilities(0.10, 80)["undecided"], 2) == 0.96
+
+
+def test_b11_plan_shift_bounds_and_p5():
+    out = v7.plan_shift(np.array([0.0, 10.0, 25.0, 18.0, 30.0, 29.0, 40.0]))
+    assert out["share_moved"] == pytest.approx(2 / 7) and out["median_shift"] == pytest.approx(4.0)
+    assert v7.plan_shift(np.arange(5.0))["median_shift"] is None
+    b = v7.general_probability_bounds([0.95] * 10)
+    assert b["independent"] == pytest.approx(0.95 ** 10) and b["comonotone"] == 0.95
+    with pytest.raises(ValueError):
+        v7.general_probability_bounds([1.2])
+    assert v7.p5_passes(18.0, 19.0) and not v7.p5_passes(18.0, 19.01)

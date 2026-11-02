@@ -50,6 +50,8 @@ D4_BW_MS = 1.0           # KDE bandwidth (the paper's sigma = 1.0, unit not stat
 M3_DONORS = 40           # amendment B2: M3's donors drawn without replacement, one per M0 text
 GATE_AUC, GATE_HUMAN_SHARE = 0.90, 0.10
 MARGIN = 0.10            # headline equivalence margin
+HD3_LIMIT = 0.02         # amendment B11: Hd3's limit on the mean absolute paired change
+P5_LIMIT_MS = 1.0        # amendment B11: P5, page-layer median with and without the hook
 N_BOOT = 2000
 N_FOLDS = 5
 Z95 = float(stats.norm.ppf(0.975))
@@ -747,6 +749,107 @@ def machine_general(readings: dict[tuple[str, str, str], str], valid: dict[str, 
     responds_kept = [list(c) for s_ in kept for c in cells[s_] if readings[c] == "responds"]
     return {"entering": enter, "kept_out": kept, "general_not_moved": general, "responds": responds,
             "responds_kept_out": responds_kept}
+
+
+def reading_probabilities(rate: float, n: int) -> dict[str, float]:
+    """Amendment B11 (decision 19): the probabilities of the three readings of one cell when each person flips with
+    probability `rate`, half each way, by enumerating every (b, c). not_changed_probability is the first of them."""
+    if not 0 <= rate < 1 or n <= 0:
+        raise ValueError("need 0 <= rate < 1 and n > 0")
+    out = {"not changed": 0.0, "responds": 0.0, "undecided": 0.0}
+    half = rate / 2
+    for b in range(n + 1):
+        for c in range(n - b + 1):
+            if half == 0:
+                pr = float(b == c == 0)
+            else:
+                pr = math.exp(math.lgamma(n + 1) - math.lgamma(b + 1) - math.lgamma(c + 1) - math.lgamma(n - b - c + 1)
+                              + (b + c) * math.log(half) + (n - b - c) * math.log1p(-rate))
+            out[headline(b, c, n)["reading"]] += pr
+    return out
+
+
+def boundary_readings(b: int, c: int, n: int, missing: int) -> dict:
+    """Amendment B11 (decision 23): the reading of the complete pairs beside three readings that put the `missing`
+    pairs back as no flips, all as flips b (human -> machine) and all as flips c. With no complete pair the complete
+    reading is None and the three are still given."""
+    if missing < 0 or n < 0 or n + missing == 0:
+        raise ValueError("need missing >= 0, n >= 0 and at least one pair")
+    return {"complete": headline(b, c, n)["reading"] if n > 0 else None,
+            "missing_as_no_flip": headline(b, c, n + missing)["reading"],
+            "missing_as_b": headline(b + missing, c, n + missing)["reading"],
+            "missing_as_c": headline(b, c + missing, n + missing)["reading"]}
+
+
+GATE_ENTRY = {"D1": "D1_uniform", "D2_lr": "D2_lr", "D2_rf": "D2_rf", "D3": "D3", "D4": "D4"}   # D1's validity: Uniform
+
+
+def grid_note(gate: dict, detector: str) -> str:
+    """Amendment B11 (decision 25): 'note' if the detector's gridded validity version has an AUC below GATE_AUC (the note
+    'possible dependence on the recording grid' goes on its 'not changed' cells), 'no note' if not, 'unknown' if the
+    gridded AUC could not be computed (None or NaN: reported as such, never read as 'no dependence'). D1 is read on
+    D1_uniform (analysis_details.D1_gate). The held-out humans are not gridded, so only the AUC can raise the note."""
+    auc = gate[GATE_ENTRY[detector]]["gridded"]["auc"]
+    if auc is None or not np.isfinite(auc):
+        return "unknown"
+    return "note" if auc < GATE_AUC else "no note"
+
+
+def executable_plan(wished: np.ndarray) -> np.ndarray:
+    """Amendment B11 (decision 22): M1's wished times can go backwards; the executable plan is their running maximum
+    (the character order kept, equal times allowed). It is the machine side's plan; the difference is reported."""
+    w = np.asarray(wished, dtype=float)
+    if w.ndim != 1 or not np.all(np.isfinite(w)):
+        raise ValueError("wished times must be a finite 1-d array")
+    return np.maximum.accumulate(w) if w.size else w
+
+
+def plan_shift(wished: np.ndarray) -> dict:
+    """Amendment B11: what the executable plan changed, reported apart: the share of presses moved and the median shift
+    (executable minus wished) over the moved presses (None if none moved)."""
+    w = np.asarray(wished, dtype=float)
+    d = executable_plan(w) - w
+    moved = d > 0
+    return {"share_moved": float(moved.mean()) if w.size else 0.0,
+            "median_shift": float(np.median(d[moved])) if moved.any() else None}
+
+
+def general_probability_bounds(cell_probs: list[float]) -> dict:
+    """Amendment B11 (decision 19): rough bounds on the probability that every cell reads 'not changed', from the
+    per-cell probabilities: the product (cells independent) and the smallest (cells perfectly dependent). Cells share
+    persons, so the truth lies between them only under positive dependence; reported as rough."""
+    pr = np.asarray(cell_probs, dtype=float)
+    if pr.size == 0 or np.any((pr < 0) | (pr > 1)):
+        raise ValueError("need probabilities in [0, 1]")
+    return {"independent": float(np.prod(pr)), "comonotone": float(pr.min())}
+
+
+def p5_passes(median_with_hook_ms: float, median_without_hook_ms: float) -> bool:
+    """Amendment B11, prediction P5: the page layer's median recorded gap without the hook within P5_LIMIT_MS of that
+    with the hook (18 and 50 ms controls without load, each checked on its own)."""
+    return abs(median_with_hook_ms - median_without_hook_ms) <= P5_LIMIT_MS + EPS_EDGE
+
+
+def floor_abs_change(before: np.ndarray, after: np.ndarray, key: list[int]) -> dict:
+    """Amendment B11 (decision 24), Hd3: the mean over persons of |after - before| decides (at most HD3_LIMIT); the
+    signed mean is the bias, with paired_prob_change's percentile interval, and does not decide."""
+    before, after = np.asarray(before, dtype=float), np.asarray(after, dtype=float)
+    bias = paired_prob_change(before, after, key)   # raises if no complete pair
+    ok = np.isfinite(before) & np.isfinite(after)
+    mabs = float(np.abs(after[ok] - before[ok]).mean())
+    # the pairs with a missing score are counted (bias['removed']); fewer than FLOOR_MIN_PERSONS: not read
+    read = bias["n"] >= FLOOR_MIN_PERSONS
+    return {"mean_abs": mabs, "passes": (mabs <= HD3_LIMIT + EPS_EDGE) if read else None, "bias": bias,
+            "n": bias["n"], "removed": bias["removed"]}
+
+
+
+def e_split(n_e: int) -> tuple[np.ndarray, np.ndarray]:
+    """Amendment B11 (decision 20): E's indices split into the 40 M3 donors (m3_donors, text order) and E_train
+    (every other index, ascending), on which D2, D3, D4 and their validity gate are trained."""
+    donors = m3_donors(n_e)
+    train = np.setdiff1d(np.arange(n_e), donors)
+    return donors, train
 
 
 def saturation_share(p: np.ndarray) -> float:
