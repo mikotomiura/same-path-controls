@@ -244,6 +244,7 @@ def test_the_production_plan_sets_no_num_predict():
     assert set(bodies[0]["options"]) == {"temperature", "seed"}
 
 
-def test_extra_options_may_not_set_the_seed_or_temperature():
+@pytest.mark.parametrize("key", ["seed", "temperature"])
+def test_extra_options_may_not_set_the_seed_or_temperature(key):
     with pytest.raises(ValueError):
-        llm_plan.make_plan("m", "Write.", 1, io.StringIO(), generate=lambda b: {}, extra_options={"seed": 5})
+        llm_plan.make_plan("m", "Write.", 1, io.StringIO(), generate=lambda b: {}, extra_options={key: 5})

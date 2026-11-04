@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 import time
 from pathlib import Path
 
@@ -150,9 +151,15 @@ def main(argv=None, generate=None) -> int:
             log.write(json.dumps({"type": "header", "model": model, "seed": a.seed, "extra_options": extra,
                                   "prompt": plan_prompt(ollama.essay_prompt(task))}) + "\n")
             res = make_plan(a.model, ollama.essay_prompt(task), a.seed, log, generate=generate, extra_options=extra)
-    finally:
+    except BaseException:
         if generate is None:
-            ollama.unload(a.model)
+            try:
+                ollama.unload(a.model)
+            except Exception as e:  # noqa: BLE001 - the error of the plan is the one raised
+                print(f"unload failed after the error: {e}", file=sys.stderr)
+        raise
+    if generate is None:
+        ollama.unload(a.model)
     result = {"model": a.model, "seed": a.seed, "extra_options": extra, "ok": res["ok"], "attempts": res["attempts"],
               "n_presses": len(res["presses"]), "skipped_chars": res["skipped_chars"],
               "per_attempt": summarize_attempts(a.out / "llm.ndjson")}

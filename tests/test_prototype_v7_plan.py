@@ -59,7 +59,8 @@ def plan(tmp_path_factory):
     hs, h0 = synthetic_persons(rng)
     e_gaps = [rng.uniform(50, 600, int(rng.integers(40, 90))) for _ in range(N_E)]
     out = tmp_path_factory.mktemp("plan") / "plan"
-    man = vp.build(C7, hs, dict(enumerate(e_gaps)), N_E, prompts(), out)
+    man, runs = vp.build(C7, hs, dict(enumerate(e_gaps)), N_E, prompts(), out)
+    vp.publish(out, man, runs)
     return {"out": out, "man": man, "h0": h0, "e_gaps": e_gaps, "hs": hs,
             "items": json.loads((out / "runs.json").read_text())}
 
@@ -314,7 +315,8 @@ def test_session_arguments(plan):
 
 def test_manifest_holds_no_id_and_hashes_every_file(plan):
     files = sorted(p.relative_to(plan["out"]).as_posix() for p in plan["out"].rglob("*") if p.is_file())
-    assert sorted(plan["man"]["files_sha256"]) == files
+    assert sorted(plan["man"]["files_sha256"]) == sorted(set(files) - {"manifest.json"})
+    assert plan["man"]["files_sha256"]["runs.json"] == vp.sha256(plan["out"] / "runs.json")
     assert "m3_donors.json" in files
 
 
@@ -553,7 +555,7 @@ def plan_copy(plan, tmp_path: Path) -> tuple[Path, vr.Persons, str]:
     d = tmp_path / "plan"
     shutil.copytree(plan["out"], d)
     ps = vr.Persons(pool=["a", "b", "c"], h=["a", "b"], e=["c"], donors=np.array([]), e_train=np.array([]), looked=3)
-    cond = "c" * 64
+    cond = vr.conditions_sha256(b"conditions")
     (d / "manifest.json").write_text(json.dumps({**plan["man"], "persons": vp.persons_record(ps),
                                                  "conditions_sha256": cond}))
     return d, ps, cond
@@ -576,6 +578,16 @@ def test_the_analysis_reads_the_plans_manifest(plan, captured, tmp_path):
         vr.read_plan(d, captured["out"], ps, "d" * 64)
     with pytest.raises(SystemExit, match="replay persons"):
         vr.read_plan(d, captured["out"], vr.Persons([], ["z"], [], np.array([]), np.array([]), 0), cond)
+    with pytest.raises(SystemExit, match="pool"):
+        vr.read_plan(d, captured["out"], vr.Persons(["a", "b"], ["a", "b"], [], np.array([]), np.array([]), 0), cond)
+    man = json.loads((d / "manifest.json").read_text())
+    (d / "manifest.json").write_text(json.dumps({**man, "n_items": man["n_items"] - 1}))
+    with pytest.raises(SystemExit, match="does not count"):
+        vr.read_plan(d, captured["out"], ps, cond)
+    files = {k: v for k, v in man["files_sha256"].items() if k != "runs.json"}
+    (d / "manifest.json").write_text(json.dumps({**man, "files_sha256": files}))
+    with pytest.raises(SystemExit, match="names no runs.json"):
+        vr.read_plan(d, captured["out"], ps, cond)
 
 
 def test_a_changed_plan_file_stops_the_analysis(plan, captured, tmp_path):
@@ -584,8 +596,8 @@ def test_a_changed_plan_file_stops_the_analysis(plan, captured, tmp_path):
     with pytest.raises(SystemExit, match="P3.txt"):
         vr.read_plan(d, captured["out"], ps, cond)
     d2, _, _ = plan_copy(plan, tmp_path / "2")
-    (d2 / "extra.txt").write_text("x")
-    with pytest.raises(SystemExit, match="files are not"):
+    (d2 / "desktop.ini").write_text("x")
+    with pytest.raises(SystemExit, match="extra \\['desktop.ini'\\]"):
         vr.read_plan(d2, captured["out"], ps, cond)
 
 
@@ -657,12 +669,17 @@ def test_a_failed_m1_whose_schedule_is_not_its_streams_plan_is_a_fault(tmp_path)
 
 def test_a_done_m1_of_one_press_is_its_plan_but_no_text_for_m0(plan, tmp_path):
     d = m1_folder(tmp_path, "done", 1, seed=8)
-    keys = vp.m1_plan(d)
-    assert len(keys) == len(vr.read_events(d / "schedule.ndjson").keys)
-    if len(keys) < 2:
-        with pytest.raises(SystemExit) as e:
-            vp.derive("M0", 0, d, plan["out"])
-        assert e.value.code == 3
+    (d / "schedule.ndjson").unlink()
+    (d / "llm.ndjson").unlink()
+    write_ndjson(d / "llm.ndjson", [{"type": "chunk", "n": 0, "recv_ns": 10 ** 6, "token": "a", "n_chars": 1,
+                                     "done": False},
+                                    {"type": "chunk", "n": 1, "recv_ns": 3 * 10 ** 6, "token": "", "n_chars": 0,
+                                     "done": True}])
+    ev.write(d / "schedule.ndjson", ev.make([0.0], ["a"]), "M1", "t")
+    assert vp.m1_plan(d) == ["a"]   # done with one press: its plan (load_capture keeps it)
+    with pytest.raises(SystemExit) as e:
+        vp.derive("M0", 0, d, plan["out"])
+    assert e.value.code == 3
 
 
 def test_every_llm_item_has_seed_1_and_its_classs_model(plan):
@@ -749,7 +766,7 @@ def test_main_make_writes_the_manifest_the_analysis_reads(plan, captured, tmp_pa
     out = tmp_path / "made"
     vp.main_make(out)
     got = vr.read_plan(out, logs_with_runs_sha(captured, tmp_path, vp.sha256(out / "runs.json")), ps,
-                       hashlib.sha256(b"conditions").hexdigest())
+                       vr.conditions_sha256(b"conditions"))
     assert got["replaced_keys_H"] == plan["man"]["replaced_keys_H"]
     man = json.loads((out / "manifest.json").read_text())
     assert man["git_commit"] == "f" * 40 and man["persons"]["ids_looked_at"] == 999
@@ -779,3 +796,25 @@ def test_main_make_stops_on_a_kupa_file_of_another_sha(plan, tmp_path, monkeypat
     with pytest.raises(SystemExit, match="does not match"):
         vp.main_make(tmp_path / "made")
     assert not (tmp_path / "made").exists()
+
+
+def test_one_runlog_of_all_blocks_passes_the_analysis(plan, tmp_path):
+    caps = tmp_path / "one"
+    rl.run(plan["items"], [20261031, 7, 6], caps, runner=fake_runner, maker=in_process_maker, shower=lambda p: None,
+           runs_sha=runs_file_sha(plan))
+    d, ps, cond = plan_copy(plan, tmp_path)
+    assert vr.read_plan(d, caps, ps, cond)["runs_sha256"] == runs_file_sha(plan)
+    f = caps / "runlog.ndjson"
+    rows = f.read_text().splitlines()
+    rows[1], rows[2] = rows[2], rows[1]
+    f.write_text("\n".join(rows) + "\n")
+    with pytest.raises(SystemExit, match="items or their order"):
+        vr.read_plan(d, caps, ps, cond)
+
+
+def test_a_plan_without_runs_json_cannot_be_run(plan, tmp_path):
+    out = tmp_path / "p"
+    man, runs = vp.build(C7, plan["hs"], dict(enumerate(plan["e_gaps"])), N_E, prompts(), out)
+    assert not (out / "runs.json").exists() and not (out / "manifest.json").exists()
+    vp.publish(out, man, runs)
+    assert vp.sha256(out / "runs.json") == man["files_sha256"]["runs.json"]

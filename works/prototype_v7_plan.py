@@ -201,8 +201,9 @@ def models(c: dict) -> tuple[str, str]:
 
 
 def build(c: dict, h_series: list[tuple[np.ndarray, list[str]]], donors: dict[int, np.ndarray], n_e: int,
-          prompts: list[str], out: Path) -> dict:
-    """Write the plan into the new folder `out` (see the module's text) and return the manifest. h_series: the replay
+          prompts: list[str], out: Path) -> tuple[dict, bytes]:
+    """Write the plan into the new folder `out` (see the module's text) but runs.json, and return the manifest and
+    runs.json's bytes (written by publish). h_series: the replay
     persons' (times, original keys) in replay_H's draw order; donors: M3's donor gaps by E index; n_e: |E|."""
     if len(h_series) != vr.N_H:
         raise PlanStop(f"{len(h_series)} replay persons, not {vr.N_H}")
@@ -297,8 +298,7 @@ def build(c: dict, h_series: list[tuple[np.ndarray, list[str]]], donors: dict[in
                                   for t in range(vr.N_TEXTS)}}
     with open(out / "m3_donors.json", "x", encoding="utf-8", newline="\n") as f:
         json.dump(don, f)
-    with open(out / "runs.json", "x", encoding="utf-8", newline="\n") as f:
-        json.dump(items, f, indent=1)
+    runs = (json.dumps(items, indent=1) + "\n").encode("utf-8")
     files = sorted(p for p in out.rglob("*") if p.is_file())
     manifest = {"n_items": len(items),
                 "items_per_series": {s_: sum(it["name"].split("/")[0] == s_ for it in items)
@@ -306,8 +306,18 @@ def build(c: dict, h_series: list[tuple[np.ndarray, list[str]]], donors: dict[in
                 "items_per_block": {str(b): sum(it["block"] == b for it in items) for b in range(N_BLOCKS + 1)},
                 "replaced_keys_H": replaced, "l0_prompts": [f"P{k + 1}" for k in l0],
                 "models": {"8B_class": m8, "14B_class": m14},
-                "files_sha256": {p.relative_to(out).as_posix(): sha256(p) for p in files}}
-    return manifest
+                "files_sha256": {**{p.relative_to(out).as_posix(): sha256(p) for p in files},
+                                 "runs.json": hashlib.sha256(runs).hexdigest()}}
+    return manifest, runs
+
+
+def publish(out: Path, manifest: dict, runs: bytes) -> None:
+    """manifest.json, then runs.json last: a plan folder without runs.json cannot be run, and one with runs.json has
+    its manifest (an interrupted make leaves no runnable half-plan, even when the clean-up itself cannot run)."""
+    with open(out / "manifest.json", "x", encoding="utf-8", newline="\n") as f:
+        json.dump(manifest, f, indent=1)
+    with open(out / "runs.json", "xb") as f:
+        f.write(runs)
 
 
 def persons_record(ps: "vr.Persons") -> dict:
@@ -364,12 +374,11 @@ def main_make(out: Path) -> None:
     if out.exists():
         raise PlanStop(f"{out} exists; a plan is never written over")
     try:
-        man = build(c, h_series, e_gaps, len(ps.e), prompts, out)
-        man.update({"conditions_sha256": hashlib.sha256(raw).hexdigest(), "git_commit": commit, "git_dirty": False,
+        man, runs = build(c, h_series, e_gaps, len(ps.e), prompts, out)
+        man.update({"conditions_sha256": vr.conditions_sha256(raw), "git_commit": commit, "git_dirty": False,
                     "data_sha256": {n: s_ for n, (_, s_) in files.items()}, "persons": persons_record(ps),
                     "plan_code_sha256": sha256(Path(__file__))})
-        with open(out / "manifest.json", "x", encoding="utf-8", newline="\n") as f:
-            json.dump(man, f, indent=1)
+        publish(out, man, runs)
     except BaseException:
         shutil.rmtree(out, ignore_errors=True)   # no half-written plan (or one without its manifest) is left
         raise

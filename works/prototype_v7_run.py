@@ -1484,7 +1484,8 @@ def main(argv: list[str] | None = None) -> None:
     m4 = c6["mapping"]["v4_conditions"]
     raw4 = cm.check_file(ROOT / m4["file"], m4["sha256"], "v4's conditions")
     c4 = json.loads(raw4)
-    paths = [COND.relative_to(ROOT).as_posix(), COND_V6.relative_to(ROOT).as_posix(), m4["file"], *CODE]
+    paths = [COND.relative_to(ROOT).as_posix(), COND_V6.relative_to(ROOT).as_posix(), m4["file"], *CODE,
+             DEVIATIONS.relative_to(ROOT).as_posix()]   # the deviations as committed (amendment B17)
     cm.same_as_head([ROOT / p for p in paths])
     state = cm.git_state(paths)
     kp = c["data"]["kupa"]
@@ -1501,7 +1502,10 @@ def main(argv: list[str] | None = None) -> None:
     h0 = [{"times": essay[p]["times"], "kinds": essay[p]["kinds"]} for p in ps.h]
     e_gaps = [v7.gaps_of(essay[p]["times"]) for p in ps.e]
     caps = load_all(captures)
-    plan_rec = read_plan(plan_dir, captures, ps, hashlib.sha256(raw).hexdigest())
+    plan_rec = read_plan(plan_dir, captures, ps, conditions_sha256(raw))
+    dev_raw = DEVIATIONS.read_bytes()
+    plan_rec["deviations"] = {"file": DEVIATIONS.relative_to(ROOT).as_posix(), "sha256": hashlib.sha256(dev_raw).hexdigest(),
+                              "git": cm.git_state([DEVIATIONS.relative_to(ROOT).as_posix()])}
     tmp = Path(tempfile.mkdtemp(prefix="prototype_v7-", dir=OUT_DIR.parent))
     try:
         rec = run(c, h0, e_gaps, ps.e_train, caps, c4["mapping"], c4["relief"])
@@ -1527,6 +1531,14 @@ def main(argv: list[str] | None = None) -> None:
     print(json.dumps(to_json(rec["predictions"])))
 
 
+DEVIATIONS = ROOT / "works" / "conditions" / "prototype_v7_deviations.md"   # record (amendment B17)
+
+
+def conditions_sha256(raw: bytes) -> str:
+    """The conditions' SHA-256 as the plan's manifest and the analysis both name it (record, amendment B17)."""
+    return hashlib.sha256(raw).hexdigest()
+
+
 def read_plan(plan_dir: Path, captures: Path, ps: Persons, conditions_sha: str) -> dict:
     """The plan the captures ran (amendment B16), checked before any value: every file of the plan is the one of its
     manifest.json; the manifest was made from these conditions and these replay persons; every runlog header names
@@ -1537,19 +1549,26 @@ def read_plan(plan_dir: Path, captures: Path, ps: Persons, conditions_sha: str) 
     from capture import runlist as rl
     man = json.loads((plan_dir / "manifest.json").read_text(encoding="utf-8"))
     files = sorted(p.relative_to(plan_dir).as_posix() for p in plan_dir.rglob("*") if p.is_file())
-    if sorted(man["files_sha256"]) != sorted(set(files) - {"manifest.json"}):
-        raise RunStop("the plan's files are not the ones of its manifest")
+    if "runs.json" not in man["files_sha256"]:
+        raise RunStop("the plan's manifest names no runs.json")
+    extra = sorted(set(files) - set(man["files_sha256"]) - {"manifest.json"})
+    missing = sorted(set(man["files_sha256"]) - set(files))
+    if extra or missing:
+        raise RunStop(f"the plan's files are not the ones of its manifest: extra {extra[:5]}, missing {missing[:5]}")
     for rel, sha in man["files_sha256"].items():
         if hashlib.sha256((plan_dir / rel).read_bytes()).hexdigest() != sha:
             raise RunStop(f"the plan's {rel} is not the one of its manifest")
     if man.get("conditions_sha256") != conditions_sha:
         raise RunStop("the plan was made from other conditions than these")
-    if man["persons"]["replay_H_sha256"] != sha_ids(ps.h):
-        raise RunStop("the plan's replay persons are not this run's")
+    if man["persons"]["replay_H_sha256"] != sha_ids(ps.h) or man["persons"]["pool_sha256"] != sha_ids(ps.pool):
+        raise RunStop("the plan's replay persons or pool are not this run's")
     runs_sha = man["files_sha256"]["runs.json"]
     if {h["runs_sha256"] for h in runlog_headers(captures)} != {runs_sha}:
         raise RunStop("the captures were run from another runs.json than this plan's")
     items = json.loads((plan_dir / "runs.json").read_text(encoding="utf-8"))
+    if man["n_items"] != len(items) or man["items_per_block"] != {
+            str(b): sum(it["block"] == b for it in items) for b in range(N_RUN_BLOCKS)}:
+        raise RunStop("the plan's manifest does not count runs.json's items")
     seq, _ = rl.order(items, RUN_KEY)
     logs = runlog_files(captures)
     for f in logs:
