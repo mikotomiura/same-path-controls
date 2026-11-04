@@ -323,14 +323,20 @@ def main(argv=None) -> int:
                           "ime_open_before": ime_before, "ime_open_after": ime_after}
         if not (fg and st["has_focus"] and st["box_active"] and ime_after == 0):
             raise RuntimeError(f"the page is not ready to receive presses: {meta['checks']}")
-        n_armed = page.state()["counts"]["armed"]
-        page.cmd("arm")
-        page.wait("armed", n_armed + 1, 10)
+        def arm() -> None:
+            n_armed = page.state()["counts"]["armed"]
+            page.cmd("arm")
+            page.wait("armed", n_armed + 1, 10)
+
+        if not a.live:
+            arm()
         if meta["mouse_guard"]["used"]:
             guard = MouseGuard()
         for k in range(COUNTDOWN_S, 0, -1):
             print(f"{k}...", flush=True)
             time.sleep(1.0)
+        if a.live:  # L0: the page records from the signal, as the hook layer is read from it (review of 2026-11-04)
+            arm()
         stop = hook.esc if hook else None
         meta["typing_start_utc"] = now_utc()
         meta["typing_start_perf_ns"] = time.perf_counter_ns()
