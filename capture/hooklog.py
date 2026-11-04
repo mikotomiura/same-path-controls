@@ -2,8 +2,9 @@
 
 Run as a child of the session:  python -m capture.hooklog --out hook.ndjson
 It prints 'READY <thread id>' once the hook is installed, 'ESC <ns>' when a non-injected Esc goes down (the stop
-flag of the injector) and 'END <ns>' on a non-injected Ctrl+Alt+End (the end signal of the live capture L0); both are
-printed by a thread of their own, never from the callback. The records are appended to the file in batches while the
+flag of the injector), 'END <ns>' on a non-injected Ctrl+Alt+End (the end signal of the live capture L0) and
+'FOREIGN <ns>' on an injected key down without the injector's mark that is not a modifier (keys through a remote desktop
+come injected: returns-v3); all are printed by a thread of their own, never from the callback. The records are appended to the file in batches while the
 hook runs; the session stops it with PostThreadMessageW(thread id, WM_QUIT), and the last batch and the footer are
 written then.
 
@@ -157,6 +158,7 @@ def run(out: Path) -> int:
     n_raw = [0]
     esc_at: list[int] = []
     end_at: list[int] = []
+    foreign_at: list[int] = []
     signal = threading.Event()
 
     def proc(code, wparam, lparam):
@@ -169,7 +171,13 @@ def run(out: Path) -> int:
             n_raw[0] += 1
             if down:
                 held.add(vk)
-                if not flags & LLKHF_INJECTED:
+                if flags & LLKHF_INJECTED:
+                    # injected but not by us, and not a modifier (the Alt of --auto-focus): keys typed through a
+                    # remote desktop, for instance, which the hook cannot tell from an injection (returns-v3)
+                    if k.dwExtraInfo != EXTRA_MARK and vk not in MODIFIERS:
+                        foreign_at.append(t)
+                        signal.set()
+                else:
                     if vk == VK_ESCAPE:
                         esc_at.append(t)
                         signal.set()
@@ -181,7 +189,7 @@ def run(out: Path) -> int:
         return user32.CallNextHookEx(None, code, wparam, lparam)
 
     def reporter():  # prints Esc and the end chord for the session, outside the callback
-        sent_esc = sent_end = 0
+        sent_esc = sent_end = sent_foreign = 0
         while True:
             signal.wait()
             signal.clear()
@@ -191,6 +199,9 @@ def run(out: Path) -> int:
             while sent_end < len(end_at):
                 print(f"END {end_at[sent_end]}", flush=True)
                 sent_end += 1
+            if sent_foreign < len(foreign_at):  # the first of a run is enough for the session
+                print(f"FOREIGN {foreign_at[sent_foreign]}", flush=True)
+                sent_foreign = len(foreign_at)
 
     cb = HOOKPROC(proc)
     start = {"type": "header", "pid": __import__("os").getpid(), "time_ns": time.time_ns(), "perf_ns": perf(),
@@ -201,6 +212,7 @@ def run(out: Path) -> int:
     f.flush()
     classifier = Classifier(layout_table(user32.VkKeyScanW))
     written = [0]
+    writer_error: list[str] = []
     stop_writer = threading.Event()
 
     def drain():
@@ -213,8 +225,13 @@ def run(out: Path) -> int:
             written[0] += len(lines)
 
     def writer():
-        while not stop_writer.wait(WRITE_EVERY_S):
-            drain()
+        # an error here is kept for the footer (n_raw != n_written then): the session's check sees the loss (Mac
+        # review of returns-v3), instead of a writer thread dying silently while the capture ends 'done'
+        try:
+            while not stop_writer.wait(WRITE_EVERY_S):
+                drain()
+        except Exception as e:  # noqa: BLE001 - recorded in the footer
+            writer_error.append(f"{type(e).__name__}: {e}")
 
     threading.Thread(target=reporter, daemon=True).start()
     wt = threading.Thread(target=writer, daemon=True)
@@ -231,9 +248,12 @@ def run(out: Path) -> int:
     user32.UnhookWindowsHookEx(hook)
     stop_writer.set()
     wt.join()
-    drain()
+    try:
+        drain()
+    except Exception as e:  # noqa: BLE001 - recorded in the footer
+        writer_error.append(f"{type(e).__name__}: {e}")
     stop = {"type": "footer", "time_ns": time.time_ns(), "perf_ns": perf(), "n_raw": n_raw[0],
-            "n_written": written[0]}
+            "n_written": written[0], **({"writer_error": writer_error} if writer_error else {})}
     f.write(json.dumps(stop) + "\n")
     f.close()
     print("DONE", flush=True)

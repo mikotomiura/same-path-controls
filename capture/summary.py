@@ -131,6 +131,24 @@ def covered_spans(load: list[dict], t1: int, stall_ns: int) -> list[tuple[int, i
 LOAD_UNCOVERED_MAX_MS = 1000.0
 
 
+def foreign_injected_keys(hook: list[dict]) -> int:
+    """Key downs that came injected without the injector's mark, modifiers left out (the Alt of --auto-focus): keys
+    through a remote desktop come so, and cannot be told from an injection (researcher's decision of 2026-11-04, b)."""
+    return sum(1 for r in hook if r.get("type") == "key" and r["down"] and r["injected"] and not r["ours"]
+               and r["kind"] != "modifier")
+
+
+def hook_log(hook: list[dict]) -> dict:
+    """Whether hook.ndjson holds every record the hook saw: its footer (written when the hook stops) says
+    n_raw == n_written and no error of the writer (Mac review of returns-v3)."""
+    ft = hook[-1] if hook and hook[-1].get("type") == "footer" else None
+    if ft is None:
+        return {"complete": False, "footer": False}
+    ok = ft.get("n_raw") == ft.get("n_written") and not ft.get("writer_error")
+    return {"complete": ok, "footer": True, "n_raw": ft.get("n_raw"), "n_written": ft.get("n_written"),
+            **({"writer_error": ft["writer_error"]} if ft.get("writer_error") else {})}
+
+
 def problems(s: dict, meta: dict) -> dict:
     """What makes a finished capture unusable as it stands, so that it ends 'interrupted' and is redone once
     (conditions run_order.logged: 'a capture interrupted or restarted is redone once and counted'). Drops and extras
@@ -144,6 +162,11 @@ def problems(s: dict, meta: dict) -> dict:
     n_page = (s.get("page") or {}).get("n", 0)
     if n_page == 0 and (planned or meta.get("mode") == "live"):
         out["page_recorded_nothing"] = True
+    if meta.get("hook_installed", True) and s.get("foreign_injected_keys"):
+        out["foreign_injected_keys"] = s["foreign_injected_keys"]
+    hl = s.get("hook_log")
+    if meta.get("hook_installed", True) and hl is not None and not hl.get("complete"):
+        out["hook_log_incomplete"] = hl
     pl = meta.get("page_log")
     if pl is not None and (pl.get("sent") != pl.get("saved") or pl.get("batches_failed")):
         out["page_log_not_all_saved"] = {"sent": pl.get("sent"), "saved": pl.get("saved"),
@@ -171,6 +194,9 @@ def summarize(out: Path) -> dict:
     page = _ndjson(out / "page.ndjson")
     inj = [r for r in _ndjson(out / "inject.ndjson") if r.get("type") != "header"]
     s: dict = {"mode": meta.get("mode"), "status": meta.get("status")}
+    if (out / "hook.ndjson").exists():
+        s["hook_log"] = hook_log(hook)
+        s["foreign_injected_keys"] = foreign_injected_keys(hook)
 
     if meta.get("mode") == "live":
         # only the presses between the signal and the end chord (the Enter that readies the page and any press before

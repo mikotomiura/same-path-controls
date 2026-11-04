@@ -172,13 +172,15 @@ def test_m2_plan_of_untypable_characters_only_is_a_failed_attempt():
 
 
 def test_m2_a_timeout_of_ollama_is_a_failed_attempt_not_an_error():
+    # a read timeout only (the decision of 2026-11-04 on returns-v3): other errors of ollama raise
+    # (tests/test_capture_v3_review.py)
     import json
     log = io.StringIO()
     r = llm_plan.make_plan("m", "Write.", 1, log, generate=two_calls([(TimeoutError("timed out"),),
-                                                                        ("ab", OSError("connection reset")),
+                                                                        ("ab", TimeoutError("timed out")),
                                                                         ("ab", '{"gaps_ms": [0, 80]}')]))
     assert r["ok"] and r["attempts"] == 3
-    assert r["failures"] == ["ollama: TimeoutError: timed out", "ollama: OSError: connection reset"]
+    assert r["failures"] == ["ollama: TimeoutError: timed out", "ollama: TimeoutError: timed out"]
     first, second = (json.loads(x) for x in log.getvalue().splitlines()[:2])
     assert "gaps" not in first and second["essay"]["response"] == "ab" and "error" in second["gaps"]
 

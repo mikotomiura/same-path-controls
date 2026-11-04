@@ -194,6 +194,8 @@ def write_capture(d, meta, hook=None, page=None, load=None, plan_n=3):
     d.mkdir()
     (d / "meta.json").write_text(js.dumps(meta), encoding="utf-8")
     events.write(d / "events.ndjson", events.make([0.0, 100.0, 200.0][:plan_n], ["a", "b", "c"][:plan_n]), "t", "t")
+    if hook is not None:  # the hook's footer, as capture/hooklog.py writes it when it stops (returns-v3)
+        hook = [*hook, {"type": "footer", "n_raw": len(hook), "n_written": len(hook)}]
     for name, recs in (("hook.ndjson", hook), ("page.ndjson", page), ("load.ndjson", load)):
         if recs is not None:
             (d / name).write_text("".join(js.dumps(r) + "\n" for r in recs), encoding="utf-8")

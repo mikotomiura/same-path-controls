@@ -134,6 +134,7 @@ class Hook(Child):
         self.tid = int(self.first.split()[1])
         self.esc = threading.Event()
         self.end = threading.Event()
+        self.foreign = threading.Event()  # an injected key that is not ours (a remote desktop): returns-v3
         self.done = threading.Event()
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
@@ -147,6 +148,8 @@ class Hook(Child):
                 self.esc.set()
             elif w[0] == "END":
                 self.end.set()
+            elif w[0] == "FOREIGN":
+                self.foreign.set()
             elif w[0] == "DONE":
                 self.done.set()
 
@@ -229,6 +232,15 @@ def parse(argv=None) -> argparse.Namespace:
     return a
 
 
+REMOTE_HOSTS = ("remoting_host.exe",)  # Chrome Remote Desktop's host: its keys come injected (returns-v3)
+
+
+def remote_hosts_running(tasklist_csv: str) -> list[str]:
+    """The remote-desktop hosts in the output of 'tasklist /FO CSV /NH' (one quoted CSV row per process)."""
+    names = {ln.split('","')[0].strip('"').lower() for ln in tasklist_csv.splitlines() if ln.startswith('"')}
+    return [h for h in REMOTE_HOSTS if h in names]
+
+
 def main(argv=None) -> int:
     a = parse(argv)
     if sys.platform != "win32":
@@ -238,6 +250,15 @@ def main(argv=None) -> int:
     from capture.stop import StopSignal
 
     out: Path = a.out
+    if a.live:  # decision of 2026-11-04 (a): L0 is typed on the PC's own keyboard, never through a remote desktop
+        listing = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=60)
+        if listing.returncode != 0:
+            raise SystemExit(f"tasklist failed ({listing.returncode}): the remote-desktop check cannot be made")
+        running = remote_hosts_running(listing.stdout)
+        if running:
+            raise SystemExit(f"a remote-desktop host is running ({', '.join(running)}): its keys come injected and "
+                             "L0 cannot be told from an injection. Stop it (the service 'chromoting') and type on "
+                             "this PC's own keyboard.")
     out.mkdir(parents=True, exist_ok=False)  # never over an earlier capture
     sys.setswitchinterval(a.switch_interval_ms / 1000.0)
     mode = "live" if a.live else "llm_stream" if a.llm_stream else "llm_plan" if a.llm_plan else "events"
@@ -255,6 +276,10 @@ def main(argv=None) -> int:
         (out / "meta.json").write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
 
     save_meta()
+    # Esc seen by the hook (given to the signal once the hook runs), or 'python -m capture.stop' from another console
+    # (the only way with --no-hook). Made here, not at the typing, so that a stop during M2's planning, the browser's
+    # start or the countdown is seen, and capture.stop finds a capture to stop (Mac review of returns-v3).
+    stopper = StopSignal(None)
     presses: list[dict] | None = None
     llm_log = None
     if a.events:
@@ -269,7 +294,7 @@ def main(argv=None) -> int:
                                      "llm_plan": sm["llm_plan"],
                                      "ollama_ps_before_capture": sm.get("ollama_ps_before_capture")}
     if a.llm_stream or a.llm_plan:
-        task = a.prompt_file.read_text(encoding="utf-8").strip()
+        task = a.prompt_file.read_text(encoding="utf-8-sig").strip()  # a BOM is not part of the task (returns-v3)
         llm_log = open(out / "llm.ndjson", "x", encoding="utf-8", newline="\n")
         llm_log.write(json.dumps({"type": "header", "model": ollama.model_record(a.model), "ollama": ollama.version(),
                                   "temperature": ollama.TEMPERATURE, "seed": a.seed,
@@ -278,7 +303,28 @@ def main(argv=None) -> int:
                                   **({"gaps_prompt": llm_plan.GAPS_PROMPT} if a.llm_plan else {})}) + "\n")
         meta["ollama"] = ollama.version()
     if a.llm_plan:
-        res = llm_plan.make_plan(a.model, ollama.essay_prompt(task), a.seed, llm_log)
+        try:
+            res = llm_plan.make_plan(a.model, ollama.essay_prompt(task), a.seed, llm_log, stop=stopper)
+        except BaseException as e:
+            # stopped: 'interrupted'; an error of ollama (not a read timeout, which is a failed attempt) or any other
+            # error: 'failed', so that the runlist redoes it once (decision of 2026-11-04 on returns-v3; D1)
+            stopped = isinstance(e, llm_plan.PlanStopped)
+            meta["status"] = "interrupted" if stopped else "failed"
+            meta["stopped_by" if stopped else "error"] = stopper.by if stopped else f"{type(e).__name__}: {e}"
+            if stopped:
+                meta["interrupted"] = {"during": "M2 planning"}
+            try:
+                ollama.unload(a.model)
+            except Exception as ue:  # noqa: BLE001 - the planning's end is the one recorded
+                meta["unload_error"] = f"{type(ue).__name__}: {ue}"
+            stopper.close()
+            llm_log.close()
+            meta["end_utc"] = now_utc()
+            save_meta()
+            if stopped:
+                print("M2: the planning was stopped; nothing typed", flush=True)
+                return INTERRUPTED
+            raise
         meta["llm_plan"] = {"ok": res["ok"], "attempts": res["attempts"], "failures": res["failures"],
                             "skipped_chars": res["skipped_chars"]}
         ollama.unload(a.model)
@@ -287,6 +333,7 @@ def main(argv=None) -> int:
         if not res["ok"]:
             meta["status"] = "m2_failed"
             meta["end_utc"] = now_utc()
+            stopper.close()
             llm_log.close()
             save_meta()
             print("M2: the plan failed 3 times; counted, nothing typed")
@@ -356,8 +403,8 @@ def main(argv=None) -> int:
             time.sleep(1.0)
         if a.live:  # L0: the page records from the signal, as the hook layer is read from it (review of 2026-11-04)
             arm()
-        # Esc seen by the hook, or 'python -m capture.stop' from another console (the only way with --no-hook)
-        stop = stopper = StopSignal(hook.esc if hook else None)
+        stopper.esc = hook.esc if hook else None
+        stop = stopper
         if not a.live:
             print("To stop: Esc" + (" (not seen without the hook)" if hook is None else "")
                   + ", or 'uv run python -m capture.stop' in another console.", flush=True)
@@ -366,7 +413,14 @@ def main(argv=None) -> int:
         interrupted = None
         if a.live:
             print("Type now. End with Ctrl+Alt+End.", flush=True)
-            hook.end.wait()
+            # a key through a remote desktop comes injected: neither L0's presses nor the end chord can be told from
+            # an injection, so the live capture stops at the first one (researcher's decision of 2026-11-04, c)
+            while not hook.end.wait(0.05):
+                if hook.foreign.is_set():
+                    print("A key came injected (a remote desktop?): stopped. Type on this PC's own keyboard.",
+                          flush=True)
+                    interrupted = {"foreign_injected_key": True}
+                    break
         elif a.llm_stream:
             res = llm_stream.run(a.model, ollama.essay_prompt(task), a.seed, a.inject, hwnd, stop, llm_log)
             c = res["counts"]
@@ -461,6 +515,7 @@ def main(argv=None) -> int:
                 k.stop()
             except Exception as e:  # noqa: BLE001
                 errors.append(f"{k.name}: {e}")
+        stopper.close()  # closed already after the typing; here when an error came before it
         if llm_log is not None and not llm_log.closed:
             llm_log.close()
         meta["end_utc"] = now_utc()

@@ -18,6 +18,7 @@ from ctypes import wintypes
 
 EVENT_NAME = "Local\\v7-capture-stop"
 WAIT_OBJECT_0 = 0
+EVENT_MODIFY_STATE = 0x0002
 
 
 def _kernel32():
@@ -26,7 +27,10 @@ def _kernel32():
     k.CreateEventW.restype = wintypes.HANDLE
     k.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     k.WaitForSingleObject.restype = wintypes.DWORD
+    k.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    k.OpenEventW.restype = wintypes.HANDLE
     k.SetEvent.argtypes = [wintypes.HANDLE]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
     k.ResetEvent.argtypes = [wintypes.HANDLE]
     return k
 
@@ -59,19 +63,26 @@ class StopSignal:
             self.h = None
 
 
-def signal(name: str = EVENT_NAME) -> None:
+def signal(name: str = EVENT_NAME) -> bool:
+    """Set the event of the running capture. False when no capture holds it: a named event exists only while a handle
+    is open, so an event made here would vanish at once and stop nothing (Mac review of returns-v3)."""
     k = _kernel32()
-    h = k.CreateEventW(None, True, False, name)
+    h = k.OpenEventW(EVENT_MODIFY_STATE, False, name)
     if not h:
-        raise OSError(f"CreateEventW failed: {ctypes.get_last_error()}")
-    k.SetEvent(h)
-    k.CloseHandle(h)
+        return False
+    try:
+        k.SetEvent(h)
+    finally:
+        k.CloseHandle(h)
+    return True
 
 
 def main() -> int:
     if sys.platform != "win32":
         raise SystemExit("Windows only")
-    signal()
+    if not signal():
+        print("no capture is running: nothing to stop")
+        return 1
     print("stop signalled")
     return 0
 

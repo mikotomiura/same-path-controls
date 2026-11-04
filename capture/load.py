@@ -32,6 +32,57 @@ STALL_MS = 500.0
 PROGRESS_S = 0.25
 
 
+def loop(f, open_stream, body, stop, first, failed) -> None:
+    """The background generations, one after another until stop is set: lines start, stall, progress, generation
+    (and error) in f. open_stream(body) -> the stream of ollama's lines; body(n) -> the request of generation n.
+    A module function so that the tests drive it with a fake stream (Mac review of returns-v3)."""
+    n = 0
+    try:
+        stall_ns = round(STALL_MS * 1e6)
+        while not stop.is_set():
+            t0 = time.perf_counter_ns()
+            tokens, done = 0, False
+            # the start is written at once, so that a generation still running is seen by the session's check
+            f.write(json.dumps({"type": "start", "n": n, "start_perf_ns": t0}) + "\n")
+            f.flush()
+            prev = t0            # the request's start, then each token's arrival
+            last_progress = t0
+            with open_stream(body(n)) as r:
+                for line in r:
+                    t = time.perf_counter_ns()
+                    # the stall is written before the stop is looked at: a generation stalled when the session
+                    # stops the load (the next line comes only after the typing) would otherwise end with no
+                    # stall line and its generation line would cover the stall (Mac review of returns-v3)
+                    if t - prev > stall_ns:  # no token for longer than STALL_MS: not generating in that gap
+                        f.write(json.dumps({"type": "stall", "n": n, "from_perf_ns": prev, "to_perf_ns": t}) + "\n")
+                        f.flush()
+                    prev = t
+                    if stop.is_set():
+                        break
+                    d = json.loads(line)
+                    if "error" in d:
+                        raise RuntimeError(f"ollama: {d['error']}")
+                    if d.get("response"):
+                        tokens += 1
+                        first.set()
+                    if d.get("done"):
+                        done = True
+                        break
+                    if t - last_progress > PROGRESS_S * 1e9:
+                        f.write(json.dumps({"type": "progress", "n": n, "last_token_perf_ns": t,
+                                            "tokens": tokens}) + "\n")
+                        f.flush()
+                        last_progress = t
+            f.write(json.dumps({"type": "generation", "n": n, "start_perf_ns": t0,
+                                "end_perf_ns": time.perf_counter_ns(), "tokens": tokens, "completed": done}) + "\n")
+            f.flush()
+            n += 1
+    except BaseException as e:  # noqa: BLE001 - written and reported: a dead load fails the capture (review 2026-11-04)
+        failed.append(f"{type(e).__name__}: {e}")
+        f.write(json.dumps({"type": "error", "n": n, "perf_ns": time.perf_counter_ns(), "error": failed[-1]}) + "\n")
+        f.flush()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -47,52 +98,11 @@ def main() -> int:
     first = threading.Event()
     failed: list[str] = []
 
-    def loop():
-        n = 0
-        try:
-            stall_ns = round(STALL_MS * 1e6)
-            while not stop.is_set():
-                t0 = time.perf_counter_ns()
-                tokens, done = 0, False
-                # the start is written at once, so that a generation still running is seen by the session's check
-                f.write(json.dumps({"type": "start", "n": n, "start_perf_ns": t0}) + "\n")
-                f.flush()
-                prev = t0            # the request's start, then each token's arrival
-                last_progress = t0
-                with ollama.open_stream({"model": a.model, "prompt": prompt, "keep_alive": "10m",
-                                     "options": {"temperature": ollama.TEMPERATURE, "seed": n}}) as r:
-                    for line in r:
-                        t = time.perf_counter_ns()
-                        if stop.is_set():
-                            break
-                        d = json.loads(line)
-                        if "error" in d:
-                            raise RuntimeError(f"ollama: {d['error']}")
-                        if t - prev > stall_ns:  # no token for longer than STALL_MS: not generating in that gap
-                            f.write(json.dumps({"type": "stall", "n": n, "from_perf_ns": prev, "to_perf_ns": t}) + "\n")
-                            f.flush()
-                        prev = t
-                        if d.get("response"):
-                            tokens += 1
-                            first.set()
-                        if d.get("done"):
-                            done = True
-                            break
-                        if t - last_progress > PROGRESS_S * 1e9:
-                            f.write(json.dumps({"type": "progress", "n": n, "last_token_perf_ns": t,
-                                                "tokens": tokens}) + "\n")
-                            f.flush()
-                            last_progress = t
-                f.write(json.dumps({"type": "generation", "n": n, "start_perf_ns": t0,
-                                    "end_perf_ns": time.perf_counter_ns(), "tokens": tokens, "completed": done}) + "\n")
-                f.flush()
-                n += 1
-        except BaseException as e:  # noqa: BLE001 - written and reported: a dead load fails the capture (review 2026-11-04)
-            failed.append(f"{type(e).__name__}: {e}")
-            f.write(json.dumps({"type": "error", "n": n, "perf_ns": time.perf_counter_ns(), "error": failed[-1]}) + "\n")
-            f.flush()
+    def body(n: int) -> dict:
+        return {"model": a.model, "prompt": prompt, "keep_alive": "10m",
+                "options": {"temperature": ollama.TEMPERATURE, "seed": n}}
 
-    t = threading.Thread(target=loop, daemon=True)
+    t = threading.Thread(target=loop, args=(f, ollama.open_stream, body, stop, first, failed), daemon=True)
     t.start()
     end = time.monotonic() + 300
     while not first.is_set():

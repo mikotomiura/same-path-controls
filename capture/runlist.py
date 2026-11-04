@@ -300,7 +300,7 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
         for a in range(2):
             t0 = time.time()
             status = runner(args, folder)
-            attempts.append({"folder": str(folder.relative_to(out)), "status": status,
+            attempts.append({"folder": folder.relative_to(out).as_posix(), "status": status,
                              "seconds": round(time.time() - t0, 1)})
             if status == "done":
                 done[name] = attempted[name] = folder
@@ -316,7 +316,7 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
                         raise FileExistsError(f"{first} exists: the runlist never writes over a capture")
                     if folder.exists():
                         rename(folder, first)
-                        attempts[-1]["folder"] = str(first.relative_to(out))
+                        attempts[-1]["folder"] = first.relative_to(out).as_posix()
                 except OSError as e:  # the item cannot be redone in its folder: failed, and the runlist goes on
                     attempts[-1]["rename_error"] = f"{type(e).__name__}: {e}"
                     detail = "rename_failed"
@@ -325,7 +325,7 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
                     break
                 new_args = redo_args(args, first)
                 if new_args != args:
-                    attempts[-1]["plan_kept_for_redo"] = str((first / "events.ndjson").relative_to(out))
+                    attempts[-1]["plan_kept_for_redo"] = (first / "events.ndjson").relative_to(out).as_posix()
                 args = new_args
         if detail == "missing_after_redo":   # both attempts failed: the last folder keeps the plan files
             attempted[name] = folder

@@ -7,7 +7,11 @@ returns-v3): (1) the essay, with the essay prompt of M1 and no format; (2) the g
 the essay, the gaps of 7B and 14B ran on as 0, 0, 0... to the length limit (returns-v3/m2-check.md). The gaps are still
 checked: len(gaps_ms) == len(text) (code points), the first 0, every gap finite and non-negative.
 At most 3 attempts per prompt and seed; after 3 failures the failure is counted and nothing is typed (no replacement).
-An HTTP error or a timeout of ollama (PLAN_TIMEOUT_S per call) is a failed attempt, not an error of the capture.
+A read timeout of ollama (PLAN_TIMEOUT_S per call: the model generated for that long without finishing) is a failed
+attempt. Any other error of ollama (connection refused, HTTP 4xx/5xx, an answer cut short or not JSON) is an error of
+the capture, not of the model: it is raised, the capture ends 'failed' and the runlist redoes it once (the researcher's
+decision of 2026-11-04, after the Mac review of returns-v3; deviation D1).
+A stop (Esc or capture.stop) before a call ends the planning with PlanStopped: the capture ends 'interrupted'.
 The plan is made before typing; the LLM is unloaded before the plan is typed, and `ollama ps` is recorded before the
 capture.
 
@@ -101,22 +105,44 @@ def presses_of(text: str, gaps: list[float]) -> tuple[list[dict], int]:
     return events.make(times, keys), skipped
 
 
+class PlanStopped(Exception):
+    """The planning was stopped (Esc or capture.stop) before a call to ollama."""
+
+
+class OllamaError(RuntimeError):
+    """An error of ollama that is not the model's: the capture fails (and is redone), no attempt is counted."""
+
+
+def is_read_timeout(e: BaseException) -> bool:
+    """A read timeout: the request reached ollama and no answer came within the timeout (the model was still
+    generating). urllib raises it bare (socket.timeout is TimeoutError); a timeout while connecting comes wrapped in a
+    URLError and is not one (ollama did not answer at all)."""
+    import urllib.error
+    return isinstance(e, TimeoutError) and not isinstance(e, urllib.error.URLError)
+
+
 def _call(generate, body: dict) -> dict:
-    """One call to ollama, as recorded. An HTTP error or a timeout (OSError) is kept as the record's error, so that it
-    fails the attempt and not the capture."""
+    """One call to ollama, as recorded. A read timeout is kept as the record's error, so that it fails the attempt;
+    any other error of ollama raises OllamaError (an answer that is not JSON included), with the record attached."""
     t0 = time.perf_counter_ns()
     try:
         ans, err = generate(body), None
-    except OSError as e:
+    except Exception as e:  # noqa: BLE001 - sorted below: only a read timeout is the model's
+        if not is_read_timeout(e):
+            rec = {"body": body, "gen_ns": time.perf_counter_ns() - t0, "error": f"ollama: {type(e).__name__}: {e}"}
+            raise OllamaError(rec["error"], rec) from e
         ans, err = {}, f"ollama: {type(e).__name__}: {e}"
     return {"body": body, "response": ans.get("response", ""), "gen_ns": time.perf_counter_ns() - t0,
             **({"error": err} if err else {}),
             **{k: v for k, v in ans.items() if k not in ("response", "context")}}
 
 
-def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None, extra_options: dict | None = None) -> dict:
+def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None, extra_options: dict | None = None,
+              stop=None) -> dict:
     """Ask for the plan up to MAX_ATTEMPTS times. generate(body) -> ollama's answer (injected in tests).
-    extra_options (planning-only checks, never the production) are added to ollama's options."""
+    extra_options (planning-only checks, never the production) are added to ollama's options. stop (is_set()) is
+    asked before each call: once set, PlanStopped. An OllamaError is written to the log as the attempt's line
+    ('raised': true) and raised."""
     if generate is None:
         from capture import ollama
 
@@ -129,16 +155,28 @@ def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None, 
     for a in range(MAX_ATTEMPTS):
         options = {"temperature": TEMPERATURE, "seed": attempt_seed(seed, a), **(extra_options or {})}
         rec = {"type": "attempt", "attempt": a}
+
+        def call(key: str, body: dict) -> dict:
+            if stop is not None and stop.is_set():
+                llm_log.write(json.dumps({**rec, "ok": False, "stopped": True}) + "\n")
+                raise PlanStopped(f"stopped before the {key} call of attempt {a}")
+            try:
+                rec[key] = _call(generate, body)
+            except OllamaError as e:
+                rec[key] = e.args[1]
+                llm_log.write(json.dumps({**rec, "ok": False, "raised": True, "reason": e.args[0]}) + "\n")
+                raise
+            return rec[key]
         try:
-            rec["essay"] = _call(generate, {"model": model, "prompt": essay_prompt, "keep_alive": "10m",
-                                            "options": options})
+            call("essay", {"model": model, "prompt": essay_prompt, "keep_alive": "10m",
+                           "options": options})
             if "error" in rec["essay"]:
                 raise ValueError(rec["essay"]["error"])
             text = rec["essay"]["response"].strip()
             if not text:
                 raise ValueError("empty essay")
-            rec["gaps"] = _call(generate, {"model": model, "prompt": gaps_prompt(text),
-                                           "format": gaps_schema(len(text)), "keep_alive": "10m", "options": options})
+            call("gaps", {"model": model, "prompt": gaps_prompt(text), "format": gaps_schema(len(text)),
+                          "keep_alive": "10m", "options": options})
             if "error" in rec["gaps"]:
                 raise ValueError(rec["gaps"]["error"])
             text, gaps = check_plan(text, rec["gaps"]["response"])
@@ -183,7 +221,7 @@ def main(argv=None, generate=None) -> int:
     a = ap.parse_args(argv)
     from capture import ollama
     a.out.mkdir(parents=True, exist_ok=False)
-    task = a.prompt_file.read_text(encoding="utf-8").strip()
+    task = a.prompt_file.read_text(encoding="utf-8-sig").strip()  # a BOM is not part of the task (returns-v3)
     extra = {"num_predict": a.num_predict} if a.num_predict is not None else None
     try:
         with open(a.out / "llm.ndjson", "x", encoding="utf-8", newline="\n") as log:

@@ -47,9 +47,11 @@ class State:
                 if batch is not None and (fid, batch) in self.batches_saved:
                     self.duplicates[fid] = self.duplicates.get(fid, 0) + 1
                     return {"saved": batch, "duplicate": True}
-                self.f.write(json.dumps({"type": "log", **body, **stamp, "n": len(entries)}) + "\n")
-                for e in entries:
-                    self.f.write(json.dumps({"type": "key", **e}) + "\n")
+                # the batch is made whole before it is written: one write, so that an error in building it writes
+                # nothing (a resent batch is then not written twice; Mac review of returns-v3)
+                text = "".join([json.dumps({"type": "log", **body, **stamp, "n": len(entries)}) + "\n",
+                                *(json.dumps({"type": "key", **e}) + "\n" for e in entries)])
+                self.f.write(text)
                 self.f.flush()
                 self.batches_saved.add((fid, batch))
                 self.saved_entries[fid] = self.saved_entries.get(fid, 0) + len(entries)
