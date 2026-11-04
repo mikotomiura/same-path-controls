@@ -84,19 +84,34 @@ CAPTURE_LAYOUT = {
     "P_idle": "c{i:03d}", "P_load": "c{i:03d}", "P_nohook": "c{i:03d}",    # i: the control's gap in ms
 }
 ASSUMED = {
-    "events.ndjson": "capture-spec-v2 section 1 (fixed): a header line {kind: header, ...}, then {i, t_ms, key}",
-    "hook.ndjson": "one line per event {t_ns, down, injected, kind}; kind one of COUNTED_KINDS or another word "
-                   "(modifier, esc, ...) that is not counted",
-    "page.ndjson": "one line per keydown {type: keydown, t_ms (event.timeStamp), kind, repeat, trusted}; other lines "
-                   "(the clock line sent when the page opens) have another type",
-    "inject.ndjson": "one line per press {i, planned_ns, sent_ns, returned_ns, ret, queue}",
-    "llm.ndjson (M1)": "one line per streamed chunk {recv_ns, token, done}; the line with done true ends the "
-                       "generation (its recv_ns is a_{K+1})",
-    "runlog.ndjson": "one line per item {item: '<series>/<unit>', result: done | redone | failed | no_plan}; the last "
-                     "line of an item counts; a failed item keeps its plan files (events.ndjson; M1 also llm.ndjson "
-                     "and schedule.ndjson) in its folder",
-    "L1 events": "L0's hook-layer counted presses, stable-sorted with equal times dropped (v6's rule), times from the "
-                 "first press, keys the kinds' representatives (capture-spec-v2 from_live)",
+    # Adapted on 2026-11-04 to the files of the work PC's capture code (feature/v7-capture after the review fixes,
+    # .steering/20261104-v7-capture-returns); the conditions are unchanged (analysis_details.run.captures).
+    "events.ndjson": "capture-spec-v2 section 1 (fixed): a header line {kind: header, ...}, then {i, t_ms, key}. M1 "
+                     "has no events.ndjson: its plan is schedule.ndjson (the same format)",
+    "hook.ndjson": "a header line and a footer line (type header / footer), then one line per event {type: key, t_ns, "
+                   "down, injected, ours, repeat, kind}; kind one of COUNTED_KINDS or modifier / nonchar (not "
+                   "counted); auto-repeated downs are left out",
+    "page.ndjson": "one line per keydown {type: key, t_ms (event.timeStamp), h_ms, kind, repeat, trusted, composing, "
+                   "in_box}; other lines (open, status, ready, armed, log) have another type",
+    "inject.ndjson": "replays: a header line {type: header, ...}, then one line per press {i, planned_ns, sent_ns, "
+                     "returned_ns, late_ns, sendinput_returned, n_inputs, ok}; M1: no header, one line per press "
+                     "{i, token, wished_ms, plan_ms, planned_ns, sent_ns, returned_ns, wait_ns, queue_len, "
+                     "sendinput_returned, n_inputs, ok}. A failed press is ok false",
+    "llm.ndjson (M1)": "lines of type header, request, chunk {n, recv_ns, token, n_chars, done}, error and final; the "
+                       "chunk with done true ends the generation (its recv_ns is a_{K+1}) and its text, if any, is a "
+                       "last token arriving at a_{K+1}. Characters outside printable ASCII and the \\r of \\r\\n are "
+                       "skipped: their slots stay empty and the running maximum is taken over the typed characters "
+                       "(the researcher's decision E-5 of 2026-11-04); \\n is Enter",
+    "runlog.ndjson": "a header line, one line per item {type: item, item: '<series>/<unit>', result: done | redone | "
+                     "failed | no_plan, detail, attempts} and a footer line; the folder <series>/<unit> holds the "
+                     "last attempt (a first interrupted attempt is <unit>.try1, not read); a failed item keeps its "
+                     "plan files (events.ndjson; M1 llm.ndjson and, when the stream ended without an error, "
+                     "schedule.ndjson); a failed plan of fewer than 2 presses is no plan",
+    "L1 events": "L0's hook-layer counted presses between the signal and the end chord (meta.json typing_start_perf_ns "
+                 "to typing_end_perf_ns), auto-repeats left out, stable-sorted with equal times dropped (v6's rule), "
+                 "times from the first press, keys the kinds' representatives (capture code events.from_live)",
+    "meta.json": "typing_start_perf_ns and typing_end_perf_ns (the same clock as the hook's t_ns): L0's hook layer is "
+                 "read between them",
 }
 
 
@@ -180,12 +195,27 @@ def need_types(path: Path, r: dict, types: dict) -> None:
             raise RunStop(f"{path}: field {k!r} missing or not {t} in {sorted(r)}")
 
 
-def read_hook(path: Path, injected: bool) -> Layer:
-    """ASSUMED['hook.ndjson']. Key downs only; injected presses for a replay, not-injected ones for live typing (L0)."""
+def read_hook(path: Path, injected: bool, window_ns: tuple[int, int] | None = None) -> Layer:
+    """ASSUMED['hook.ndjson']. Key downs only, auto-repeats left out; injected presses for a replay, not-injected ones
+    for live typing (L0), which are read inside window_ns (the signal to the end chord) only."""
     ts, ks_, other = [], [], 0
-    for r in read_ndjson(path):
-        need_types(path, r, {"t_ns": int, "down": bool, "injected": bool, "kind": str})
-        if not r["down"] or bool(r["injected"]) != injected:
+    rows = read_ndjson(path)
+    if not rows or rows[0].get("type") != "header" or rows[-1].get("type") != "footer":
+        raise RunStop(f"{path}: no header and footer line (the hook did not finish writing)")
+    for r in rows:
+        if r.get("type") in ("header", "footer"):
+            continue
+        if r.get("type") != "key":
+            raise RunStop(f"{path}: a line of unknown type {r.get('type')!r}")
+        need_types(path, r, {"t_ns": int, "down": bool, "injected": bool, "ours": bool, "repeat": bool, "kind": str})
+        if not r["down"] or r["repeat"]:
+            continue
+        # a replay's presses are those the capture injected (injected and ours, as the work PC's summary counts them);
+        # live typing's are the not-injected ones
+        mine = r["injected"] and r["ours"]
+        if (injected and not mine) or (not injected and r["injected"]):
+            continue
+        if window_ns is not None and not window_ns[0] <= r["t_ns"] <= window_ns[1]:
             continue
         if r["kind"] in COUNTED_KINDS:
             ts.append(r["t_ns"] / 1e6)
@@ -195,15 +225,24 @@ def read_hook(path: Path, injected: bool) -> Layer:
     return _layer(ts, ks_, other)
 
 
+PAGE_OTHER_TYPES = ("open", "status", "ready", "armed", "log")   # capture/serve.py's other lines
+
+
 def read_page(path: Path) -> Layer:
     """ASSUMED['page.ndjson']. Keydowns that are not repeats."""
     ts, ks_, other = [], [], 0
     for r in read_ndjson(path):
-        if r.get("type") != "keydown":
+        if r.get("type") in PAGE_OTHER_TYPES:
             continue
-        need_types(path, r, {"t_ms": (int, float), "kind": str, "repeat": bool, "trusted": bool})
+        if r.get("type") != "key":
+            raise RunStop(f"{path}: a line of unknown type {r.get('type')!r}")
+        need_types(path, r, {"t_ms": (int, float), "kind": str, "repeat": bool, "trusted": bool, "composing": bool,
+                             "in_box": bool})
         if r["repeat"]:
             continue
+        if r["kind"] in COUNTED_KINDS and (not r["in_box"] or r["composing"]):
+            raise RunStop(f"{path}: a counted press outside the box or while composing (the work PC's checks make "
+                          "such a capture interrupted)")
         if r["kind"] in COUNTED_KINDS:
             ts.append(float(r["t_ms"]))
             ks_.append(r["kind"])
@@ -214,43 +253,92 @@ def read_page(path: Path) -> Layer:
 
 def read_inject(path: Path) -> dict:
     """ASSUMED['inject.ndjson']: the waits (sent minus planned, ms), the queue lengths and the failed SendInput calls."""
-    rows = read_ndjson(path)
+    rows = [r for r in read_ndjson(path) if r.get("type") != "header"]
     if not rows:
         raise RunStop(f"{path}: no press")
     for r in rows:
-        need_types(path, r, {"planned_ns": int, "sent_ns": int, "queue": int, "ret": int})
+        need_types(path, r, {"planned_ns": int, "sent_ns": int, "ok": bool})
     wait = np.array([(r["sent_ns"] - r["planned_ns"]) / 1e6 for r in rows])
-    return {"wait_ms": wait, "queue": np.array([r["queue"] for r in rows]),
-            "failed": int(sum(1 for r in rows if r["ret"] == 0))}
+    queue = None
+    if any("queue_len" in r for r in rows):   # M1's typist only, then on every row
+        for r in rows:
+            need_types(path, r, {"queue_len": int})
+        queue = np.array([r["queue_len"] for r in rows])
+    return {"wait_ms": wait, "queue": queue, "failed": int(sum(1 for r in rows if not r["ok"]))}
 
 
-def read_llm_stream(path: Path) -> tuple[np.ndarray, np.ndarray, float, int, str]:
-    """ASSUMED['llm.ndjson (M1)']: token arrivals (ms), their characters (Unicode code points after NFC), the end of
-    generation, the number of empty tokens skipped (series.M1) and the generated text (NFC; stays on the work PC,
-    used only to check the schedule's keys)."""
-    arr, n, empty, end, text = [], [], 0, None, []
+def read_llm_stream(path: Path, unfinished: bool = False) -> tuple[np.ndarray, list[str], float, int]:
+    """ASSUMED['llm.ndjson (M1)']: the arrivals (ms) and texts (NFC) of the non-empty tokens, the end of generation
+    and the number of empty tokens skipped (series.M1). The done chunk's text, if any, is a last token arriving at the
+    end. The texts stay on the work PC (used only to recompute the schedule and check its keys).
+    unfinished (a failed capture whose typing stopped before the generation ended): with no line ending the
+    generation, the last token was never released by the work PC's planner, so it is left out and its arrival is
+    the end of the tokens before it."""
+    arr, toks, empty, end = [], [], 0, None
     for r in read_ndjson(path):
+        if r.get("type") == "error":
+            raise RunStop(f"{path}: the generation failed ({r.get('error')})")
+        if r.get("type") != "chunk":
+            continue
+        if end is not None:
+            raise RunStop(f"{path}: a chunk after the one that ends the generation")
         need_types(path, r, {"recv_ns": int, "token": str, "done": bool})
+        tok = unicodedata.normalize("NFC", r["token"])
         if r["done"]:
             end = r["recv_ns"] / 1e6
-            continue
-        tok = unicodedata.normalize("NFC", r["token"])
-        k = len(tok)
-        if k == 0:
+            if not tok:
+                continue
+        elif not tok:
             empty += 1
             continue
         arr.append(r["recv_ns"] / 1e6)
-        n.append(k)
-        text.append(tok)
+        toks.append(tok)
     if end is None:
-        raise RunStop(f"{path}: no line ends the generation")
-    return np.array(arr), np.array(n, dtype=int), float(end), empty, "".join(text)
+        if not unfinished or len(arr) < 2:
+            raise RunStop(f"{path}: no line ends the generation")
+        end = arr.pop()
+        toks.pop()
+    return np.array(arr), toks, float(end), empty
+
+
+def typed_key(text: str, j: int) -> str | None:
+    """The key typed for the j-th code point of a token (capture code llm_stream.token_keys): \\n is Enter, the \\r of
+    \\r\\n and characters outside printable ASCII are skipped (None; the researcher's decision E-5 of 2026-11-04)."""
+    c = text[j]
+    if c == "\n":
+        return "Enter"
+    if c == "\r":
+        return None
+    return c if 0x20 <= ord(c) <= 0x7E else None
+
+
+def m1_schedule(arr: np.ndarray, toks: list[str], end: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+    """M1's schedule recomputed as the work PC types it: B13's wished times over every code point (v7.m1_wished_times),
+    skipped code points removed (their slots stay empty), then the running maximum over the typed ones
+    (v7.executable_plan). Returns the typed presses' wished and determined times, the executable plan (from the first
+    typed press) and the keys."""
+    wished, det = v7.m1_wished_times(arr, np.array([len(x) for x in toks]), end)
+    keys = [typed_key(x, j) for x in toks for j in range(len(x))]
+    keep = np.array([k is not None for k in keys], dtype=bool)
+    if not keep.any():
+        raise RunStop("M1: no typable character in the generated text")
+    w, d = wished[keep], det[keep]
+    ex = v7.executable_plan(w, d)
+    return w, d, ex - ex[0], [k for k in keys if k is not None]
 
 
 def read_runlog(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
-    for r in read_ndjson(path):
-        if r["result"] not in ("done", "redone", "failed", "no_plan"):
+    rows = read_ndjson(path)
+    if not rows or rows[0].get("type") != "header" or rows[-1].get("type") != "footer":
+        raise RunStop(f"{path}: no header and footer line (the runlist did not finish)")
+    for r in rows[1:-1]:
+        if r.get("type") != "item":
+            raise RunStop(f"runlog: a line of unknown type {r.get('type')!r}")
+        need_types(path, r, {"item": str, "result": str})
+        if r["item"] in out:
+            raise RunStop(f"runlog: {r['item']} appears twice")
+        if r.get("result") not in ("done", "redone", "failed", "no_plan"):
             raise RunStop(f"runlog: unknown result {r['result']!r}")
         out[r["item"]] = r["result"]
     return out
@@ -277,6 +365,20 @@ def item_name(series: str, unit: int) -> str:
     return f"{series}/{CAPTURE_LAYOUT[series].format(i=unit)}"
 
 
+def plan_file(series: str) -> str:
+    """M1 writes its plan as it types (schedule.ndjson); every other series types events.ndjson."""
+    return "schedule.ndjson" if series in ("M1_8B", "M1_14B") else "events.ndjson"
+
+
+def typing_window(d: Path) -> tuple[int, int]:
+    """ASSUMED['meta.json']: the live capture's typing window on the hook's clock."""
+    meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    need_types(d / "meta.json", meta, {"typing_start_perf_ns": int, "typing_end_perf_ns": int})
+    if meta["typing_end_perf_ns"] < meta["typing_start_perf_ns"]:
+        raise RunStop(f"{d}/meta.json: the typing window ends before it starts")
+    return meta["typing_start_perf_ns"], meta["typing_end_perf_ns"]
+
+
 def load_capture(root: Path, runlog: dict[str, str], series: str, unit: int, *, live: bool = False,
                  hook: bool = True) -> Capture:
     name = item_name(series, unit)
@@ -291,16 +393,26 @@ def load_capture(root: Path, runlog: dict[str, str], series: str, unit: int, *, 
         # (events.ndjson; for M1 also llm.ndjson and schedule.ndjson) so that the plan side and its dependants
         # (M0, M3, M1_replay) can still be checked and scored
         cap = Capture(series, unit, "failed", folder=d if d.is_dir() else None)
-        if not live and d.is_dir() and (d / "events.ndjson").exists():
-            cap.plan = read_events(d / "events.ndjson")
+        if not live and d.is_dir() and (d / plan_file(series)).exists():
+            cap.plan = read_events(d / plan_file(series))
+            if cap.plan.times.size < 2:   # e.g. M1 with nothing typable: no plan to check or to place back
+                cap.plan = None
         return cap
     if not d.is_dir():
         raise RunStop(f"{name}: the runlog says {res} but the folder is missing")
     cap = Capture(series, unit, "captured", redone=res == "redone", folder=d)
-    cap.plan = None if live else read_events(d / "events.ndjson")
+    cap.plan = None if live else read_events(d / plan_file(series))
     if hook:
-        cap.layers["hook"] = read_hook(d / "hook.ndjson", injected=not live)
+        cap.layers["hook"] = read_hook(d / "hook.ndjson", injected=not live, window_ns=typing_window(d) if live else None)
     cap.layers["page"] = read_page(d / "page.ndjson")
+    if live and hook and cap.layers["hook"].kinds != cap.layers["page"].kinds:
+        raise RunStop(f"{name}: L0's hook and page layers do not hold the same presses (the page records from the "
+                      "signal, the hook is read from it: a press on one logger only)")
+    planned = live or (cap.plan is not None and cap.plan.times.size > 0)
+    for la, layer in cap.layers.items():   # a logger whose lines were all read as something else is not 'no press'
+        if planned and layer.times.size == 0:
+            raise RunStop(f"{name}: {la}.ndjson holds no counted press (a format other than ASSUMED, or the logger "
+                          "recorded nothing although the runlist said done)")
     if not live and (d / "inject.ndjson").exists():
         cap.inject = read_inject(d / "inject.ndjson")
     return cap
@@ -413,24 +525,28 @@ def check_plans(caps: dict[str, list[Capture]], h0: list[dict], e_gaps: list[np.
                 raise RunStop(f"{item_name(s_, cap.unit)}: the plan is not L0's hook-layer presses")
     for model in ("8B", "14B"):
         m1 = caps[f"M1_{model}"]
-        plan_shift, zero, empty = [], [], 0
+        plan_shift, zero, empty, failed_no_plan = [], [], 0, 0
         for cap in m1:
             if cap.plan is None:
                 continue
-            arr, nch, end, emp, text = read_llm_stream(cap.folder / "llm.ndjson")
+            try:
+                arr, toks, end, emp = read_llm_stream(cap.folder / "llm.ndjson", unfinished=cap.status == "failed")
+                wished, det, ex, keys = m1_schedule(arr, toks, end)
+            except (RunStop, ValueError):
+                if cap.status != "failed":
+                    raise
+                cap.plan = None   # a failed capture with too little generated to recompute: no plan (counted)
+                failed_no_plan += 1
+                continue
             empty += emp
-            wished, det = v7.m1_wished_times(arr, nch, end)
-            ex = v7.executable_plan(wished, det)
-            sched = read_events(cap.folder / "schedule.ndjson")
-            if not same_times(sched.times, ex - ex[0]) or not same_times(cap.plan.times, sched.times):
+            if not same_times(cap.plan.times, ex):
                 raise RunStop(f"{item_name(cap.series, cap.unit)}: the schedule is not the executable plan of B13")
-            if sched.keys != cap.plan.keys or "".join("\n" if k == "Enter" else k for k in sched.keys) != text:
+            if cap.plan.keys != keys:
                 raise RunStop(f"{item_name(cap.series, cap.unit)}: the schedule's keys are not the generated text")
-            cap.plan = sched
             plan_shift.append(v7.plan_shift(wished, det))
-            zero.append(v7.plan_zero_gap_share(sched.times))
+            zero.append(v7.plan_zero_gap_share(cap.plan.times))
         out["M1"][model] = {
-            "sessions_with_plan": len(zero), "empty_tokens_skipped": empty,
+            "sessions_with_plan": len(zero), "empty_tokens_skipped": empty, "failed_without_plan": failed_no_plan,
             "share_moved_median": float(np.median([p["share_moved"] for p in plan_shift])) if plan_shift else None,
             "median_shift_ms_median": _median_or_none([p["median_shift"] for p in plan_shift]),
             "zero_gap_share_median": float(np.median(zero)) if zero else None,
@@ -938,7 +1054,8 @@ def run(c: dict, h0: list[dict], e_gaps: list[np.ndarray], e_train_idx: np.ndarr
     for model in ("8B", "14B"):
         w = [cp.inject for cp in caps[f"M1_{model}"] if cp.inject is not None]
         rec["plans"]["M1"][model]["wait_ms"] = summary(np.concatenate([x["wait_ms"] for x in w]), ends=True) if w else None
-        rec["plans"]["M1"][model]["queue_max"] = int(max(x["queue"].max() for x in w)) if w else None
+        q = [x["queue"] for x in w if x["queue"] is not None]
+        rec["plans"]["M1"][model]["queue_max"] = int(max(x.max() for x in q)) if q else None
     repeat: dict = {}
     for la in LAYERS:
         h1 = caps["H1_idle"][:N_REP]
