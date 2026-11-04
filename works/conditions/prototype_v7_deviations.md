@@ -25,7 +25,9 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   .steering/20261104-v7-prep-v3-returns/decisions.md, judgement 7, after the Mac review of returns-v3; commit 9cd8547):
   any other error of ollama (connection refused or reset, HTTP 4xx or 5xx, an answer cut short or not JSON) is not
   the model's failure: no attempt is counted, the capture ends 'failed' and the runlist redoes it once, planning
-  again. A stop (Esc or capture.stop) during the planning ends the capture 'interrupted', redone once in the same way.
+  again. A stop asked during the planning (capture.stop; the hook, hence Esc, starts only after the planning) is seen
+  before each call and after the last attempt and ends the capture 'interrupted', redone once in the same way; a call
+  already running is not cut.
 - Seen in the checks after the change (generic prompt, seed 1, returns-v3/m2-check.md): both models pass at the first
   attempt and every gap is 0. Varying the call one factor at a time (no schema, no length, no format, without
   "the first 0", [character, gap] pairs with the characters fixed) gave one repeated value (0, 1, 20, 50, 100) or a
