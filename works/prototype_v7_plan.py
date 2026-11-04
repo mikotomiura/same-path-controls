@@ -1,8 +1,9 @@
 """Prototype v7: the production plan (the runlist and the planned series), made on the work PC from KUPA.
 
     python works/prototype_v7_plan.py make --out <plan folder>
-    python works/prototype_v7_plan.py derive --series M0|M3a|M3b --text <t> --schedule <M1_8B's schedule.ndjson>
+    python works/prototype_v7_plan.py derive --series M0|M3a|M3b --text <t> --m1 <M1_8B's capture folder>
                                              --plan <plan folder> --out <events.ndjson>
+    python works/prototype_v7_plan.py gate-m1 --m1 <an M1's capture folder>
 
 make: checks KUPA against the SHA-256 of the conditions (data.kupa) and draws the persons with the analysis's own
 function (prototype_v7_run.draw_persons), then writes into a new folder:
@@ -17,6 +18,9 @@ function (prototype_v7_run.draw_persons), then writes into a new folder:
   manifest.json             counts, SHA-256 of every file, the persons' SHA-256 (never an id), the conditions' SHA-256
 derive: at run time (runlist 'make'), M0's plan (55 ms on M1_8B's keys) and M3a's and M3b's (prototype_v7.m3 on
 M1_8B's keys = M0's keys) from M1_8B's executable plan of the same text (amendment B16).
+gate-m1: at run time, before M1_replay: whether the M1 capture left the plan the analysis reads (m1_plan).
+Exit codes: 0 done; 3 (NoPlan, capture/runlist.py NO_PLAN_EXIT) the dependency left no plan: the item is no_plan;
+anything else is a fault and stops the runlist.
 
 Everything written here is checked again by the analysis (prototype_v7_run.check_plans): this script and the analysis
 share draw_persons, m3 and the constants, and the contract test (tests/test_prototype_v7_plan.py) runs the plan through
@@ -67,6 +71,14 @@ assert all(ev.LIVE_KEY[k] == r for k, r in REPRESENTATIVE.items())
 
 class PlanStop(SystemExit):
     pass
+
+
+class NoPlan(SystemExit):
+    """The dependency left no plan the analysis reads: the dependant is no_plan (exit 3)."""
+
+    def __init__(self, msg: str):
+        print(f"no plan: {msg}", file=sys.stderr)
+        super().__init__(3)
 
 
 # ---------------------------------------------------------------- keys of the replayed persons
@@ -222,7 +234,7 @@ def build(c: dict, h_series: list[tuple[np.ndarray, list[str]]], donors: dict[in
     for e in range(vr.N_ESSAYS):
         add("L0", e, ["--live"], 0, show=prompt_file(f"prompts/L0_e{e}.txt", prompts[l0[e]]))
         src = "{out:" + vr.item_name("L0", e) + "}/l1_events.ndjson"
-        dep = {"after": vr.item_name("L0", e), "needs": [src]}
+        dep = {"after": vr.item_name("L0", e)}   # L0 done (a failed L0 is not captured: the analysis has no L1 plan)
         add("L1_idle", e, ["--events", src], l1_block[e], **dep)
         add("L1_load", e, ["--events", src, *load_args(f"load/L1_load_e{e}.txt", other_load_prompt(e))],
             l1_block[e], **dep)
@@ -249,15 +261,17 @@ def build(c: dict, h_series: list[tuple[np.ndarray, list[str]]], donors: dict[in
             m1 = vr.item_name(f"M1_{model}", t)
             add(f"M1_{model}", t, ["--llm-stream", "--model", name, "--prompt-file", pfiles[t], "--seed",
                                    str(SEED_LLM)], blk[t])
-            sched = "{out:" + m1 + "}/schedule.ndjson"
+            m1_dir = "{out:" + m1 + "}"
+            sched = m1_dir + "/schedule.ndjson"
             dep = {"after": m1, "needs": [sched]}
-            add(f"M1_replay_{model}", t, ["--events", sched], blk[t], **dep)
+            add(f"M1_replay_{model}", t, ["--events", sched], blk[t],
+                make=["works/prototype_v7_plan.py", "gate-m1", "--m1", m1_dir], **dep)
             if model != "8B":
                 continue
             for s_ in ("M0", "M3a", "M3b"):
                 derived = "{root}/_derived/" + s_ + f"/t{t:02d}.ndjson"
-                make = ["works/prototype_v7_plan.py", "derive", "--series", s_, "--text", str(t), "--schedule",
-                        sched, "--plan", str(out), "--out", derived]
+                make = ["works/prototype_v7_plan.py", "derive", "--series", s_, "--text", str(t), "--m1",
+                        m1_dir, "--plan", str(out), "--out", derived]
                 add(s_, t, ["--events", derived], blk[t], make=make, **dep)
     for model, name in (("8B", m8), ("14B", m14)):
         blk = blocks_of(GROUP_KINDS.index(f"M2_{model}"), vr.N_TEXTS)
@@ -296,7 +310,27 @@ def build(c: dict, h_series: list[tuple[np.ndarray, list[str]]], donors: dict[in
     return manifest
 
 
+def pool_v6_sha(c: dict) -> str:
+    """persons.pool names v6's 200 by 'ids_sha256 <hex>'."""
+    import re
+    m = re.search(r"ids_sha256 ([0-9a-f]{64})", c["persons"]["pool"])
+    if m is None:
+        raise PlanStop("persons.pool does not name v6's ids_sha256")
+    return m.group(1)
+
+
+def git_clean_commit() -> str:
+    """The plan is made from a committed state only (its code and the conditions are named by the commit)."""
+    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, capture_output=True,
+                           text=True, check=True).stdout.strip()
+    if dirty:
+        raise PlanStop("the repository has uncommitted changes: commit or ask before making the plan")
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
 def main_make(out: Path) -> None:
+    commit = git_clean_commit()
     raw, c = vr.cm.load_conditions(vr.COND)
     if "environment" not in c:
         raise PlanStop("the conditions hold no environment items yet")
@@ -312,8 +346,7 @@ def main_make(out: Path) -> None:
             raise PlanStop(f"{f} does not match the SHA-256 of the conditions ({name}): the run stops (data.kupa)")
     essay, seen = v6.read_kupa(ROOT / files["essay"][0])
     copy_, _ = v6.read_kupa(ROOT / files["copy"][0])
-    v6_sha = c["persons"]["pool"].split("ids_sha256 ")[1].split(",")[0]
-    ps = vr.draw_persons(essay, copy_, seen, v6_sha)
+    ps = vr.draw_persons(essay, copy_, seen, pool_v6_sha(c))
     keyed = read_kupa_keys(ROOT / files["essay"][0], set(ps.h))
     h_series = []
     for p in ps.h:
@@ -322,10 +355,14 @@ def main_make(out: Path) -> None:
         h_series.append((t, k))
     e_gaps = {i: v7.gaps_of(essay[p]["times"]) for i, p in enumerate(ps.e)}
     prompts = all_prompts(c, kupa_prompts(ROOT / files["meta"][0]))
-    man = build(c, h_series, e_gaps, len(ps.e), prompts, out)
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    man.update({"conditions_sha256": hashlib.sha256(raw).hexdigest(), "git_commit": commit, "git_dirty": bool(dirty),
+    if out.exists():
+        raise PlanStop(f"{out} exists; a plan is never written over")
+    try:
+        man = build(c, h_series, e_gaps, len(ps.e), prompts, out)
+    except BaseException:
+        shutil.rmtree(out, ignore_errors=True)   # no half-written plan is left to be run
+        raise
+    man.update({"conditions_sha256": hashlib.sha256(raw).hexdigest(), "git_commit": commit, "git_dirty": False,
                 "data_sha256": {n: s_ for n, (_, s_) in files.items()},
                 "persons": {"pool_sha256": vr.sha_ids(ps.pool), "replay_H_sha256": vr.sha_ids(ps.h),
                             "ids_looked_at": ps.looked, "E": len(ps.e), "v6_200_match": True},
@@ -338,14 +375,38 @@ def main_make(out: Path) -> None:
 # ---------------------------------------------------------------- derive (run time)
 
 
-def derive(series: str, text: int, schedule: Path, plan: Path) -> list[dict]:
+def m1_plan(m1: Path) -> list[str]:
+    """The keys of the plan an M1 capture left, read as prototype_v7_run (load_capture and check_plans) reads it: the
+    capture is 'captured' when its meta.json status is done, else 'failed'; a failed one with no schedule.ndjson, a
+    plan of fewer than 2 presses or a token stream too short to recompute has no plan (NoPlan); a plan that is not
+    the executable plan recomputed from llm.ndjson is a fault (PlanStop), as it stops the analysis."""
+    m1 = Path(m1)
+    meta = json.loads((m1 / "meta.json").read_text(encoding="utf-8")) if (m1 / "meta.json").exists() else {}
+    failed = meta.get("status") != "done"
+    if not (m1 / "schedule.ndjson").exists():
+        if failed:
+            raise NoPlan(f"{m1} left no schedule.ndjson")
+        raise PlanStop(f"{m1} is done but holds no schedule.ndjson")
+    plan = vr.read_events(m1 / "schedule.ndjson")
+    if plan.times.size < 2:
+        raise NoPlan(f"{m1}: the plan holds fewer than 2 presses")
+    try:
+        arr, toks, end, _ = vr.read_llm_stream(m1 / "llm.ndjson", unfinished=failed)
+        _, _, ex, keys = vr.m1_schedule(arr, toks, end)
+    except (vr.RunStop, ValueError) as e:
+        if failed:
+            raise NoPlan(f"{m1}: the token stream cannot be recomputed ({e})")
+        raise PlanStop(f"{m1} is done but its token stream cannot be recomputed: {e}")
+    if not vr.same_times(plan.times, ex) or plan.keys != keys:
+        raise PlanStop(f"{m1}: schedule.ndjson is not the executable plan of its token stream (B13)")
+    return plan.keys
+
+
+def derive(series: str, text: int, m1: Path, plan: Path) -> list[dict]:
     """M0, M3a or M3b of text `text` from M1_8B's executable plan (amendment B16; check_plans reads them back)."""
     if not 0 <= text < vr.N_TEXTS:
         raise PlanStop(f"text must be in 0..{vr.N_TEXTS - 1}")
-    _, presses = ev.read(schedule)
-    keys = [p["key"] for p in presses]
-    if len(keys) < 2:
-        raise PlanStop("M1_8B's plan holds fewer than 2 presses: no plan (analysis_details.run)")
+    keys = m1_plan(m1)
     if series == "M0":
         return ev.make([i * vr.M0_GAP_MS for i in range(len(keys))], keys)
     if series not in ("M3a", "M3b"):
@@ -368,16 +429,21 @@ def main(argv: list[str] | None = None) -> None:
     dv = sub.add_parser("derive")
     dv.add_argument("--series", required=True, choices=["M0", "M3a", "M3b"])
     dv.add_argument("--text", type=int, required=True)
-    dv.add_argument("--schedule", type=Path, required=True)
+    dv.add_argument("--m1", type=Path, required=True)
     dv.add_argument("--plan", type=Path, required=True)
     dv.add_argument("--out", type=Path, required=True)
+    gt = sub.add_parser("gate-m1")
+    gt.add_argument("--m1", type=Path, required=True)
     a = ap.parse_args(argv)
     if a.cmd == "make":
         main_make(a.out)
         return
-    presses = derive(a.series, a.text, a.schedule, a.plan)
+    if a.cmd == "gate-m1":
+        m1_plan(a.m1)
+        return
+    presses = derive(a.series, a.text, a.m1, a.plan)
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    ev.write(a.out, presses, a.series, f"derived from {a.schedule} (amendment B16)", text=a.text)
+    ev.write(a.out, presses, a.series, f"derived from {a.m1}/schedule.ndjson (amendment B16)", text=a.text)
 
 
 if __name__ == "__main__":

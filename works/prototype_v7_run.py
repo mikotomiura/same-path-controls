@@ -348,20 +348,49 @@ def read_runlog(path: Path) -> dict[str, str]:
 N_RUN_BLOCKS = 7   # run_order (amendment B16): block 0 (L0) and blocks 1-6
 
 
-def read_runlogs(root: Path) -> dict[str, str]:
+RUN_KEY = [v7.SEED, 7, 6]   # run_order.randomised
+
+
+def runlog_files(root: Path) -> list[Path]:
     """One runlog.ndjson (every block in one run), or runlog.b0.ndjson to runlog.b6.ndjson (one run per block, capture
-    runlist --block; amendment B16), never both; an item appears once over all of them."""
+    runlist --block; amendment B16), never both."""
     blocks = sorted(root.glob("runlog.b*.ndjson"))
     single = root / "runlog.ndjson"
     if not blocks:
-        return read_runlog(single)
+        return [single]
     if single.exists():
         raise RunStop(f"{root} holds runlog.ndjson and per-block runlogs: one of them is not of this run")
     want = [root / f"runlog.b{b}.ndjson" for b in range(N_RUN_BLOCKS)]
     if blocks != want:
         raise RunStop(f"the per-block runlogs are not blocks 0-{N_RUN_BLOCKS - 1}: {[b.name for b in blocks]}")
+    return want
+
+
+def runlog_headers(root: Path) -> list[dict]:
+    """The header line of each runlog: the run key of the conditions, the block of its file name, and (per-block
+    runs) one runs.json for all blocks (its SHA-256 in every header)."""
+    files = runlog_files(root)
+    heads = []
+    for b, f in enumerate(files):
+        rows = read_ndjson(f)
+        if not rows or rows[0].get("type") != "header":
+            raise RunStop(f"{f}: no header line")
+        h = rows[0]
+        if h.get("key") != RUN_KEY:
+            raise RunStop(f"{f}: the run key is {h.get('key')}, not {RUN_KEY} (run_order.randomised)")
+        if len(files) > 1 and (h.get("block") != b or not isinstance(h.get("runs_sha256"), str)):
+            raise RunStop(f"{f}: the header does not name block {b} and the runs.json it ran")
+        heads.append(h)
+    if len({h.get("runs_sha256") for h in heads}) != 1:
+        raise RunStop("the blocks were run from different runs.json files")
+    return heads
+
+
+def read_runlogs(root: Path) -> dict[str, str]:
+    """Every item's result over runlog_files(); an item appears once over all of them."""
+    runlog_headers(root)
     out: dict[str, str] = {}
-    for f in want:
+    for f in runlog_files(root):
         for item, res in read_runlog(f).items():
             if item in out:
                 raise RunStop(f"runlog: {item} appears in two blocks")
@@ -520,6 +549,19 @@ TOL_MS = 1e-3   # planned times are written in ms as floats; ns rounding on the 
 
 def same_times(a: np.ndarray, b: np.ndarray) -> bool:
     return a.shape == b.shape and bool(np.all(np.abs(a - b) <= TOL_MS))
+
+
+def l0_refs(caps: dict[str, list[Capture]]) -> list:
+    """What L1 must replay: each captured L0's hook layer, cleaned as v6 (equal times dropped); None for an L0 not
+    captured."""
+    out = []
+    for cp in caps["L0"]:
+        if cp.status != "captured":
+            out.append(None)
+            continue
+        t_, idx, _ = v7.clean_times(cp.layers["hook"].times)
+        out.append((t_, [cp.layers["hook"].kinds[i] for i in idx]))
+    return out
 
 
 def check_plans(caps: dict[str, list[Capture]], h0: list[dict], e_gaps: list[np.ndarray],
@@ -910,14 +952,7 @@ def run(c: dict, h0: list[dict], e_gaps: list[np.ndarray], e_train_idx: np.ndarr
     e_train = [e_gaps[i] for i in e_train_idx]
 
     # plans
-    l0_hook = []
-    for cp in caps["L0"]:
-        if cp.status != "captured":
-            l0_hook.append(None)
-            continue
-        t_, idx, _ = v7.clean_times(cp.layers["hook"].times)
-        l0_hook.append((t_, [cp.layers["hook"].kinds[i] for i in idx]))
-    rec["plans"] = check_plans(caps, h0, e_gaps, l0_hook)
+    rec["plans"] = check_plans(caps, h0, e_gaps, l0_refs(caps))
 
     # resolution (analysis_details.resolution)
     res = {"H0_E": v7.resolution(np.concatenate(e_gaps), *RES_ARGS),
@@ -1433,9 +1468,10 @@ def to_json(x):
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 2 or argv[0] != "--captures":
-        raise SystemExit("usage: python works/prototype_v7_run.py --captures <folder of the production captures>")
-    captures = Path(argv[1])
+    if len(argv) != 4 or argv[0] != "--captures" or argv[2] != "--plan":
+        raise SystemExit("usage: python works/prototype_v7_run.py --captures <folder of the production captures> "
+                         "--plan <folder of the plan (works/prototype_v7_plan.py make)>")
+    captures, plan_dir = Path(argv[1]), Path(argv[3])
     OUT_DIR.parent.mkdir(exist_ok=True)
     if OUT_DIR.exists():
         raise SystemExit(f"{OUT_DIR} exists; refusing to overwrite")
@@ -1464,6 +1500,7 @@ def main(argv: list[str] | None = None) -> None:
     h0 = [{"times": essay[p]["times"], "kinds": essay[p]["kinds"]} for p in ps.h]
     e_gaps = [v7.gaps_of(essay[p]["times"]) for p in ps.e]
     caps = load_all(captures)
+    plan_rec = read_plan(plan_dir, runlog_headers(captures), ps)
     tmp = Path(tempfile.mkdtemp(prefix="prototype_v7-", dir=OUT_DIR.parent))
     try:
         rec = run(c, h0, e_gaps, ps.e_train, caps, c4["mapping"], c4["relief"])
@@ -1474,6 +1511,7 @@ def main(argv: list[str] | None = None) -> None:
     rec["persons"] = {"pool_sha256": sha_ids(ps.pool), "ids_looked_at": ps.looked, "replay_H_sha256": sha_ids(ps.h),
                       "E": len(ps.e), "E_train": int(ps.e_train.size), "donors": int(ps.donors.size),
                       "v6_200_match": True}
+    rec["plan"] = plan_rec
     rec["provenance"] = {"run_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), **state,
                          "conditions_sha256": hashlib.sha256(raw).hexdigest(),
                          "v6_conditions_sha256": hashlib.sha256(raw6).hexdigest(),
@@ -1486,6 +1524,24 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"{OUT_DIR} appeared during the run; the result is left in {tmp}")
     tmp.rename(OUT_DIR)
     print(json.dumps(to_json(rec["predictions"])))
+
+
+def read_plan(plan_dir: Path, heads: list[dict], ps: Persons) -> dict:
+    """The plan the captures ran (amendment B16): its manifest.json holds runs.json's SHA-256, which every runlog
+    header must name (per-block runs), and the replay persons' SHA-256, which must be this run's; the number of
+    replaced keys of H1 (series.H1_idle, B16) is recorded from it."""
+    man = json.loads((plan_dir / "manifest.json").read_text(encoding="utf-8"))
+    runs_sha = hashlib.sha256((plan_dir / "runs.json").read_bytes()).hexdigest()
+    if man["files_sha256"].get("runs.json") != runs_sha:
+        raise RunStop("the plan's runs.json is not the one of its manifest")
+    named = {h.get("runs_sha256") for h in heads} - {None}
+    if named and named != {runs_sha}:
+        raise RunStop("the captures were run from another runs.json than this plan's")
+    if man["persons"]["replay_H_sha256"] != sha_ids(ps.h):
+        raise RunStop("the plan's replay persons are not this run's")
+    return {"runs_sha256": runs_sha, "replaced_keys_H": man["replaced_keys_H"], "n_items": man["n_items"],
+            "items_per_block": man["items_per_block"], "plan_git_commit": man.get("git_commit"),
+            "plan_code_sha256": man.get("plan_code_sha256")}
 
 
 def kp_sha(kp: dict, which: str) -> str:

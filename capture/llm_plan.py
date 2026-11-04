@@ -5,6 +5,12 @@ points), the first 0, every gap finite and non-negative. At most 3 attempts per 
 failure is counted and nothing is typed (no replacement). The plan is made before typing; the LLM is unloaded before
 the plan is typed, and `ollama ps` is recorded before the capture.
 
+Planning only (no typing; the check of decision 3 of .steering/20261104-v7-capture-returns before the production):
+    python -m capture.llm_plan --model <m> --prompt-file <task.txt> --seed 1 --out <new folder> [--num-predict N]
+writes llm.ndjson (every attempt, as session --llm-plan) and result.json (per attempt: ok, reason, characters of the
+answer, ollama's done_reason and eval_count, seconds). --num-predict is for an extra record only: the production
+(session --llm-plan) never sets it.
+
 [decided by the researcher, 2026-11-04] Attempts 2 and 3 cannot reuse the seed (with the same seed and options the output repeats), so attempt a
 (a = 0, 1, 2) uses the option seed `seed + 1000 * a` (returns/questions.md).
 [decided by the researcher, 2026-11-04] Characters the schedule cannot hold are skipped and counted, their gap is not added to the next press (the other
@@ -13,9 +19,11 @@ presses keep their times, as in M1).
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import time
+from pathlib import Path
 
 from capture import events
 
@@ -78,8 +86,9 @@ def presses_of(text: str, gaps: list[float]) -> tuple[list[dict], int]:
     return events.make(times, keys), skipped
 
 
-def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None) -> dict:
-    """Ask for the plan up to MAX_ATTEMPTS times. generate(body) -> ollama's answer (injected in tests)."""
+def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None, extra_options: dict | None = None) -> dict:
+    """Ask for the plan up to MAX_ATTEMPTS times. generate(body) -> ollama's answer (injected in tests).
+    extra_options (planning-only checks, never the production) are added to ollama's options."""
     if generate is None:
         from capture import ollama
         generate = ollama.generate
@@ -88,7 +97,7 @@ def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None) 
     failures = []
     for a in range(MAX_ATTEMPTS):
         body = {"model": model, "prompt": prompt, "format": "json", "keep_alive": "10m",
-                "options": {"temperature": TEMPERATURE, "seed": attempt_seed(seed, a)}}
+                "options": {"temperature": TEMPERATURE, "seed": attempt_seed(seed, a), **(extra_options or {})}}
         t0 = time.perf_counter_ns()
         ans = generate(body)
         raw = ans.get("response", "")
@@ -106,3 +115,46 @@ def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None) 
         llm_log.write(json.dumps({**rec, "ok": True}) + "\n")
         return {"ok": True, "attempts": a + 1, "failures": failures, "presses": presses, "skipped_chars": skipped}
     return {"ok": False, "attempts": MAX_ATTEMPTS, "failures": failures, "presses": [], "skipped_chars": 0}
+
+
+def summarize_attempts(llm_ndjson: Path) -> list[dict]:
+    out = []
+    for ln in Path(llm_ndjson).read_text(encoding="utf-8").splitlines():
+        r = json.loads(ln)
+        if r.get("type") != "attempt":
+            continue
+        out.append({"attempt": r["attempt"], "seed": r["body"]["options"]["seed"], "ok": r["ok"],
+                    "reason": r.get("reason"), "answer_chars": len(r["response"]), "done_reason": r.get("done_reason"),
+                    "eval_count": r.get("eval_count"), "seconds": round(r["gen_ns"] / 1e9, 1)})
+    return out
+
+
+def main(argv=None, generate=None) -> int:
+    ap = argparse.ArgumentParser(prog="python -m capture.llm_plan")
+    ap.add_argument("--model", required=True)
+    ap.add_argument("--prompt-file", type=Path, required=True)
+    ap.add_argument("--seed", type=int, required=True)
+    ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--num-predict", type=int)
+    a = ap.parse_args(argv)
+    from capture import ollama
+    a.out.mkdir(parents=True, exist_ok=False)
+    task = a.prompt_file.read_text(encoding="utf-8").strip()
+    extra = {"num_predict": a.num_predict} if a.num_predict is not None else None
+    with open(a.out / "llm.ndjson", "x", encoding="utf-8", newline="\n") as log:
+        model = ollama.model_record(a.model) if generate is None else {"name": a.model}
+        log.write(json.dumps({"type": "header", "model": model, "seed": a.seed, "extra_options": extra,
+                              "prompt": plan_prompt(ollama.essay_prompt(task))}) + "\n")
+        res = make_plan(a.model, ollama.essay_prompt(task), a.seed, log, generate=generate, extra_options=extra)
+    if generate is None:
+        ollama.unload(a.model)
+    result = {"model": a.model, "seed": a.seed, "extra_options": extra, "ok": res["ok"], "attempts": res["attempts"],
+              "n_presses": len(res["presses"]), "skipped_chars": res["skipped_chars"],
+              "per_attempt": summarize_attempts(a.out / "llm.ndjson")}
+    (a.out / "result.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
+    print(json.dumps({k: result[k] for k in ("model", "ok", "attempts", "n_presses")}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

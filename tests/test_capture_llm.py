@@ -1,6 +1,7 @@
 """Tests of the M1 causal plan (capture/llm_stream.py, amendment B13) and the M2 plan check (capture/llm_plan.py)."""
 
 import io
+import json
 import sys
 import time
 from pathlib import Path
@@ -215,3 +216,29 @@ def test_m1_stream_failure_stops_the_typist_before_raising(monkeypatch):
                              {"error": "gone"}], sent=sent, wait_s=0.3)
     time.sleep(1.2)  # long enough for a typist that was not stopped to type the three queued presses
     assert sent == []
+
+
+def test_planning_only_command_records_each_attempt(tmp_path):
+    task = tmp_path / "task.txt"
+    task.write_text("Write about a season.")
+    answers = iter([{"response": '{"text": "ab", "gaps_ms": [0]}', "done_reason": "length", "eval_count": 9},
+                    {"response": '{"text": "ab", "gaps_ms": [0, 40]}', "done_reason": "stop", "eval_count": 7}])
+    bodies = []
+
+    def gen(body):
+        bodies.append(body)
+        return next(answers)
+    llm_plan.main(["--model", "m", "--prompt-file", str(task), "--seed", "1", "--out", str(tmp_path / "o"),
+                   "--num-predict", "4096"], generate=gen)
+    r = json.loads((tmp_path / "o" / "result.json").read_text())
+    assert r["ok"] and r["attempts"] == 2 and r["n_presses"] == 2
+    assert [(x["ok"], x["seed"], x["done_reason"]) for x in r["per_attempt"]] == [(False, 1, "length"),
+                                                                                 (True, 1001, "stop")]
+    assert all(b["options"]["num_predict"] == 4096 for b in bodies)
+
+
+def test_the_production_plan_sets_no_num_predict():
+    bodies = []
+    llm_plan.make_plan("m", "Write.", 1, io.StringIO(),
+                       generate=lambda b: bodies.append(b) or {"response": '{"text": "a", "gaps_ms": [0]}'})
+    assert set(bodies[0]["options"]) == {"temperature", "seed"}

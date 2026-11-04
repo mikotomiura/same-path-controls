@@ -4,6 +4,7 @@ LLM), and the plans the captures hold pass prototype_v7_run.check_plans. No KUPA
 
 import csv
 import json
+import subprocess
 import sys
 import zlib
 from pathlib import Path
@@ -19,7 +20,9 @@ import prototype_v7 as v7  # noqa: E402
 import prototype_v7_plan as vp  # noqa: E402
 import prototype_v7_run as vr  # noqa: E402
 from capture import events as ev  # noqa: E402
+from capture import hooklog  # noqa: E402
 from capture import runlist as rl  # noqa: E402
+from test_prototype_v7_run import hook_key, write_layers, write_ndjson  # noqa: E402
 
 C7 = json.loads((ROOT / "works/conditions/prototype_v7.json").read_text())
 N_E = 60
@@ -64,14 +67,38 @@ def plan(tmp_path_factory):
 # ---------------------------------------------------------------- a fake runner (what capture.session writes)
 
 
-FAIL_KEEP_PLAN = "M1_8B/t03"      # both attempts fail; schedule.ndjson stays: M0, M3, M1_replay still run
+FAIL_KEEP_PLAN = "M1_8B/t03"      # both attempts fail after the generation ended: the plan stays, dependants run
 FAIL_NO_PLAN = "M1_8B/t05"        # both attempts fail before any schedule: dependants have no plan
-FAIL_L0 = "L0/e1"                 # L0 fails: no l1_events, L1 has no plan
+FAIL_ONE_PRESS = "M1_8B/t07"      # fails with a schedule of one press: the analysis reads no plan
+FAIL_SHORT_STREAM = "M1_14B/t09"  # fails with one token and no end: the stream cannot be recomputed
+FAIL_L0 = "L0/e1"                 # L0 fails after writing l1_events: L1 is not run
 M2_FAILED = "M2_14B/t07"          # the plan fails three times
+WINDOW = (1_000_000, 10 ** 15)    # L0's typing window on the hook's clock (ns)
 
 
 def arg(args: list[str], flag: str) -> str:
     return args[args.index(flag) + 1]
+
+
+def write_m1(folder: Path, rng: np.random.Generator, n_tokens: int, done: bool = True) -> None:
+    """A token stream in the capture code's llm.ndjson format, and the schedule the analysis recomputes from it."""
+    words = ["the ", "cat", " sat", ".", "\n", "on ", "a", " mat", "\u2019s", ""]
+    t = 1_000_000
+    rows = [{"type": "header"}, {"type": "request"}]
+    for n in range(n_tokens):
+        t += int(rng.integers(5, 80)) * 1_000_000
+        tok = words[int(rng.integers(len(words)))]
+        rows.append({"type": "chunk", "n": n, "recv_ns": t, "token": tok, "n_chars": len(tok), "done": False})
+    if done:
+        rows.append({"type": "chunk", "n": n_tokens, "recv_ns": t + 9_000_000, "token": "", "n_chars": 0,
+                     "done": True})
+    write_ndjson(folder / "llm.ndjson", rows)
+    try:
+        arr, toks, end, _ = vr.read_llm_stream(folder / "llm.ndjson", unfinished=not done)
+        _, _, ex, keys = vr.m1_schedule(arr, toks, end)
+    except SystemExit:
+        return
+    ev.write(folder / "schedule.ndjson", ev.make(ex, keys), "M1", "fake")
 
 
 def fake_runner(args: list[str], folder: Path) -> str:
@@ -80,17 +107,23 @@ def fake_runner(args: list[str], folder: Path) -> str:
     rng = np.random.default_rng(zlib.crc32(name.encode()))
     meta = {"command": args}
     status = "done"
+    plan_file = None
     if "--events" in args:
         h, presses = ev.read(Path(arg(args, "--events")))
         ev.write(folder / "events.ndjson", presses, h.get("series", ""), h.get("source", ""))
+        plan_file = folder / "events.ndjson"
     elif "--llm-stream" in args:
-        if name != FAIL_NO_PLAN:
-            n = int(rng.integers(20, 50))
-            keys = [str(x) for x in rng.choice(list("abcde fgh."), n)] + ["Enter"]
-            t = np.maximum.accumulate(np.concatenate([[0.0], np.cumsum(rng.uniform(-5, 60, n))]))
-            ev.write(folder / "schedule.ndjson", ev.make(t, keys), "M1", "fake")
-            (folder / "llm.ndjson").write_text("{}\n")
-        if name in (FAIL_KEEP_PLAN, FAIL_NO_PLAN):
+        if name == FAIL_ONE_PRESS:
+            write_m1(folder, rng, 30)
+            (folder / "schedule.ndjson").unlink()
+            ev.write(folder / "schedule.ndjson", ev.make([0.0], ["a"]), "M1", "fake")
+        elif name == FAIL_SHORT_STREAM:
+            write_m1(folder, rng, 1, done=False)
+            ev.write(folder / "schedule.ndjson", ev.make([0.0, 5.0], ["a", "b"]), "M1", "fake")
+        elif name != FAIL_NO_PLAN:
+            write_m1(folder, rng, int(rng.integers(15, 40)))
+            plan_file = folder / "schedule.ndjson"
+        if name in (FAIL_KEEP_PLAN, FAIL_NO_PLAN, FAIL_ONE_PRESS, FAIL_SHORT_STREAM):
             status = "interrupted"
     elif "--llm-plan" in args:
         if name == M2_FAILED:
@@ -99,16 +132,38 @@ def fake_runner(args: list[str], folder: Path) -> str:
             n = int(rng.integers(20, 40))
             ev.write(folder / "events.ndjson", ev.from_gaps("x" * n, np.concatenate([[0], rng.uniform(1, 90, n - 1)])),
                      "M2", "fake")
+            plan_file = folder / "events.ndjson"
     elif "--live" in args:
-        if name == FAIL_L0:
-            status = "interrupted"
-        else:
-            kinds = [str(x) for x in rng.choice(["alnum", "space", "end", "other", "backspace"], 40)]
-            t = np.concatenate([[0.0], np.cumsum(rng.uniform(60, 300, 39))])
-            ev.write(folder / "l1_events.ndjson", ev.make(t, [ev.LIVE_KEY[k] for k in kinds]), "L1", "fake")
+        meta["typing_start_perf_ns"], meta["typing_end_perf_ns"] = WINDOW
+        kinds = [str(x) for x in rng.choice(["alnum", "space", "end", "other", "backspace", "enter"], 60)]
+        t = np.concatenate([[2.0], 2.0 + np.cumsum(rng.uniform(60, 300, 59))])
+        early = [hook_key(0.5, "alnum", False)]   # before the signal: neither L0 nor L1
+        write_layers(folder, t, kinds, rng, injected=False, extra_hook=early)
+        tie_on_both_layers(folder)   # a press at the same time as the previous one: dropped by v6's rule
+        l1, _ = ev.from_live(hooklog.read(folder / "hook.ndjson"), *WINDOW)
+        ev.write(folder / "l1_events.ndjson", l1, "L1", "fake")
+        if name == FAIL_L0:   # capture.session: l1_events written, then a stop error in finally makes it failed
+            status = "failed"
+    if plan_file is not None and status == "done":
+        p = vr.read_events(plan_file)
+        write_layers(folder, p.times, p.kinds, rng, hook="--no-hook" not in args)
     meta["status"] = status
     (folder / "meta.json").write_text(json.dumps(meta))
     return status
+
+
+def tie_on_both_layers(folder: Path) -> None:
+    """Repeat the 10th counted down at the same time on the hook layer, and its kind on the page layer."""
+    rows = hooklog.read(folder / "hook.ndjson")
+    downs = [i for i, r in enumerate(rows) if r.get("type") == "key" and r["down"] and not r["repeat"]
+             and r["kind"] not in ("modifier", "nonchar") and r["t_ns"] >= WINDOW[0]]
+    j = downs[10]
+    rows.insert(j + 1, dict(rows[j]))
+    write_ndjson(folder / "hook.ndjson", rows)
+    page = hooklog.read(folder / "page.ndjson")
+    keys = [i for i, r in enumerate(page) if r.get("type") == "key"]
+    page.insert(keys[10] + 1, dict(page[keys[10]]))
+    write_ndjson(folder / "page.ndjson", page)
 
 
 def in_process_maker(argv: list[str]) -> int:
@@ -116,7 +171,7 @@ def in_process_maker(argv: list[str]) -> int:
     try:
         vp.main(argv[1:])
     except SystemExit as e:
-        return 1 if e.code else 0
+        return e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
     return 0
 
 
@@ -126,80 +181,39 @@ def captured(plan, tmp_path_factory):
     shown = []
     for b in range(vp.N_BLOCKS + 1):
         rl.run(plan["items"], [20261031, 7, 6], out, runner=fake_runner, block=b, maker=in_process_maker,
-               shower=shown.append)
+               shower=shown.append, runs_sha=runs_file_sha(plan))
     return {"out": out, "shown": shown}
 
 
-def caps_of(root: Path) -> dict[str, list[vr.Capture]]:
-    """The plans of every capture, read as load_capture reads them (layers left out: no logger is faked)."""
-    runlog = vr.read_runlogs(root)
-    units = {"H1_idle": range(vr.N_H), "H1_load": range(vr.N_H), "H1_rep": range(vr.N_REP),
-             "L0": range(vr.N_ESSAYS), "L1_idle": range(vr.N_ESSAYS), "L1_load": range(vr.N_ESSAYS),
-             **{s_: range(vr.N_TEXTS) for s_ in vr.MACHINE},
-             "P_idle": [int(c) for c in vr.CONTROLS_MS], "P_load": [int(c) for c in vr.CONTROLS_MS],
-             "P_nohook": [int(c) for c in v7.P_NOHOOK_MS]}
-    out = {}
-    for s_, us in units.items():
-        out[s_] = []
-        for u in us:
-            name = vr.item_name(s_, u)
-            res = runlog[name]
-            d = root / name
-            if res == "no_plan":
-                out[s_].append(vr.Capture(s_, u, "no_plan"))
-                continue
-            cap = vr.Capture(s_, u, "failed" if res == "failed" else "captured", folder=d)
-            f = d / vr.plan_file(s_)
-            if s_ != "L0" and f.exists():
-                cap.plan = vr.read_events(f)
-            out[s_].append(cap)
-    return out
-
-
-@pytest.fixture()
-def m1_from_schedule(monkeypatch):
-    """check_plans recomputes M1's plan from llm.ndjson (tested in test_prototype_v7_run); here the fake M1 has no
-    token stream, so the recomputation returns the schedule the fake wrote."""
-    monkeypatch.setattr(vr, "read_llm_stream", lambda path, unfinished=False: (Path(path), [], 0.0, 0))
-
-    def sched(arr, toks, end):
-        p = vr.read_events(Path(arr).parent / "schedule.ndjson")
-        return p.times, p.times, p.times, p.keys
-    monkeypatch.setattr(vr, "m1_schedule", sched)
-    monkeypatch.setattr(v7, "plan_shift", lambda w, d: {"share_moved": 0.0, "median_shift": None})
-
-
-def l0_hook_of(root: Path) -> list:
-    out = []
-    for e in range(vr.N_ESSAYS):
-        f = root / vr.item_name("L0", e) / "l1_events.ndjson"
-        if not f.exists():
-            out.append(None)
-            continue
-        p = vr.read_events(f)
-        out.append((p.times, p.kinds))
-    return out
+def runs_file_sha(plan) -> str:
+    """As capture.runlist main: the SHA-256 of the runs.json file."""
+    return vp.sha256(plan["out"] / "runs.json")
 
 
 # ---------------------------------------------------------------- the contract
 
 
-def test_the_plan_passes_check_plans_after_the_runlist(plan, captured, m1_from_schedule):
-    caps = caps_of(captured["out"])
-    vr.check_plans(caps, plan["h0"], plan["e_gaps"], l0_hook_of(captured["out"]))
-    assert sum(c.plan is not None for c in caps["M3b"]) == vr.N_TEXTS - 1
+def test_the_plan_passes_check_plans_after_the_runlist(plan, captured):
+    caps = vr.load_all(captured["out"])   # the analysis's own readers (runlogs, events, hook, page, meta)
+    out = vr.check_plans(caps, plan["h0"], plan["e_gaps"], vr.l0_refs(caps))
+    assert sum(c.plan is not None for c in caps["M3b"]) == vr.N_TEXTS - 2
+    assert out["M1"]["8B"]["sessions_with_plan"] == vr.N_TEXTS - 2
+    assert out["M1"]["14B"]["failed_without_plan"] == 1
+    assert sum(c.status == "captured" for c in caps["L1_idle"]) == vr.N_ESSAYS - 1
 
 
-def test_failures_reach_the_dependants_as_the_conditions_say(captured):
+def test_failures_reach_the_dependants_as_the_analysis_reads_them(captured):
     runlog = vr.read_runlogs(captured["out"])
-    assert runlog[FAIL_KEEP_PLAN] == "failed"
+    for m1 in (FAIL_KEEP_PLAN, FAIL_NO_PLAN, FAIL_ONE_PRESS, FAIL_SHORT_STREAM, FAIL_L0):
+        assert runlog[m1] == "failed"
     for s_ in ("M0", "M3a", "M3b", "M1_replay_8B"):
         assert runlog[f"{s_}/t03"] == "done"      # B16: made from the failed capture's kept plan
         assert runlog[f"{s_}/t05"] == "no_plan"   # no plan file left
-    assert runlog[FAIL_L0] == "failed"
+        assert runlog[f"{s_}/t07"] == "no_plan"   # a plan of one press is no plan for the analysis
+    assert runlog["M1_replay_14B/t09"] == "no_plan"
     assert runlog["L1_idle/e1"] == runlog["L1_load/e1"] == "no_plan"
     assert runlog[M2_FAILED] == "no_plan"
-    assert sum(r == "done" for r in runlog.values()) == len(runlog) - 3 - 4 - 2 - 1
+    assert sum(r == "done" for r in runlog.values()) == len(runlog) - 5 - 12
 
 
 def test_every_planned_capture_is_in_the_runlog_once(plan, captured):
@@ -304,24 +318,69 @@ def test_manifest_holds_no_id_and_hashes_every_file(plan):
     assert "m3_donors.json" in files
 
 
+def m1_folder(tmp_path: Path, status: str = "done", n_tokens: int = 20, seed: int = 3, done: bool = True) -> Path:
+    d = tmp_path / f"m1-{status}-{n_tokens}-{done}"
+    d.mkdir()
+    write_m1(d, np.random.default_rng(seed), n_tokens, done=done)
+    (d / "meta.json").write_text(json.dumps({"status": status}))
+    return d
+
+
 def test_derive_m0_and_m3_are_what_check_plans_reads(plan, tmp_path):
-    keys = list("hello world.") + ["Enter"] + list("ok")
-    sched = tmp_path / "schedule.ndjson"
-    ev.write(sched, ev.make(np.arange(len(keys)) * 7.0, keys), "M1", "test")
-    m0 = vp.derive("M0", 4, sched, plan["out"])
+    d = m1_folder(tmp_path)
+    keys = vr.read_events(d / "schedule.ndjson").keys
+    m0 = vp.derive("M0", 4, d, plan["out"])
     assert [p["key"] for p in m0] == keys and np.allclose(np.diff([p["t_ms"] for p in m0]), 55.0)
     want = v7.m3(4, len(keys) - 1, plan["e_gaps"])
     for s_ in ("M3a", "M3b"):
-        got = vp.derive(s_, 4, sched, plan["out"])
+        got = vp.derive(s_, 4, d, plan["out"])
         assert [p["key"] for p in got] == keys
         assert np.allclose(np.diff([p["t_ms"] for p in got]), want[s_], atol=1e-9)
 
 
-def test_derive_refuses_a_plan_of_fewer_than_two_presses(plan, tmp_path):
-    sched = tmp_path / "schedule.ndjson"
-    ev.write(sched, ev.make([0.0], ["a"]), "M1", "test")
-    with pytest.raises(SystemExit):
-        vp.derive("M0", 0, sched, plan["out"])
+def test_m1_gate_reads_as_the_analysis_reads(tmp_path):
+    ok = m1_folder(tmp_path)
+    assert vp.m1_plan(ok) == vr.read_events(ok / "schedule.ndjson").keys
+    one = m1_folder(tmp_path, "interrupted")
+    (one / "schedule.ndjson").unlink()
+    with pytest.raises(SystemExit) as e:
+        vp.m1_plan(one)
+    assert e.value.code == 3
+    ev.write(one / "schedule.ndjson", ev.make([0.0], ["a"]), "M1", "t")
+    with pytest.raises(SystemExit) as e:
+        vp.m1_plan(one)
+    assert e.value.code == 3
+    bad = m1_folder(tmp_path, "done", 25, seed=4)   # a done M1 whose schedule is not its stream's plan: a fault
+    _, presses = ev.read(bad / "schedule.ndjson")
+    (bad / "schedule.ndjson").unlink()
+    ev.write(bad / "schedule.ndjson", ev.make([p["t_ms"] * 1.01 for p in presses], [p["key"] for p in presses]),
+             "M1", "t")
+    with pytest.raises(SystemExit) as e:
+        vp.m1_plan(bad)
+    assert e.value.code not in (0, 3)
+    gone = m1_folder(tmp_path, "done", 22, seed=5)
+    (gone / "schedule.ndjson").unlink()
+    with pytest.raises(SystemExit) as e:
+        vp.m1_plan(gone)
+    assert e.value.code not in (0, 3)
+
+
+def test_the_command_line_gives_the_runlists_exit_codes(plan, tmp_path):
+    """derive and gate-m1 as the runlist starts them: a new python in the repository (not in this process)."""
+    def cli(*a):
+        return subprocess.run([sys.executable, "works/prototype_v7_plan.py", *a], cwd=ROOT, capture_output=True,
+                              text=True, timeout=300)
+    d = m1_folder(tmp_path)
+    out = tmp_path / "derived" / "M3b.ndjson"
+    r = cli("derive", "--series", "M3b", "--text", "2", "--m1", str(d), "--plan", str(plan["out"]), "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    _, got = ev.read(out)
+    assert np.allclose(np.diff([p["t_ms"] for p in got]), v7.m3(2, len(got) - 1, plan["e_gaps"])["M3b"])
+    failed = m1_folder(tmp_path, "interrupted", 1, done=False)   # one token and no end: not recomputable
+    ev.write(failed / "schedule.ndjson", ev.make([0.0, 5.0], ["a", "b"]), "M1", "t")
+    assert cli("gate-m1", "--m1", str(failed)).returncode == rl.NO_PLAN_EXIT
+    (d / "llm.ndjson").write_text('{"type": "error", "error": "x"}\n')
+    assert cli("gate-m1", "--m1", str(d)).returncode not in (0, rl.NO_PLAN_EXIT)
 
 
 def test_read_kupa_keys_follows_v6s_reading(tmp_path):
@@ -384,9 +443,9 @@ def test_an_unfinished_earlier_block_stops(plan, tmp_path):
 
 
 def test_a_block_runs_once(plan, captured):
-    with pytest.raises(FileExistsError):
+    with pytest.raises(ValueError, match="has run"):
         rl.run(plan["items"], [20261031, 7, 6], captured["out"], runner=fake_runner, block=3, maker=in_process_maker,
-               shower=lambda p: None)
+               shower=lambda p: None, runs_sha=runs_file_sha(plan))
 
 
 def test_blocks_keep_the_order_of_the_whole_permutation(plan, captured):
@@ -396,13 +455,17 @@ def test_blocks_keep_the_order_of_the_whole_permutation(plan, captured):
         assert rows[0]["order"] == [it["name"] for it in seq if it["block"] == b]
 
 
-def test_a_failed_make_is_no_plan(tmp_path):
+def test_make_exit_3_is_no_plan_and_any_other_exit_stops(tmp_path):
     items = [{"name": "M1_8B/t00", "args": ["--llm-stream"], "block": 1},
              {"name": "M0/t00", "args": ["--events", "{root}/d.ndjson"], "block": 1, "after": "M1_8B/t00",
               "needs": ["{out:M1_8B/t00}/schedule.ndjson"], "make": ["works/prototype_v7_plan.py", "derive"]}]
-    res = rl.run(items, [1], tmp_path / "x", runner=fake_runner, maker=lambda a: 2, shower=lambda p: None)
+    res = rl.run(items, [1], tmp_path / "x", runner=fake_runner, maker=lambda a: 3, shower=lambda p: None)
     assert [(r["item"], r["result"], r["detail"]) for r in res] == [("M1_8B/t00", "done", "done"),
-                                                                    ("M0/t00", "no_plan", "make_failed")]
+                                                                    ("M0/t00", "no_plan", "make_no_plan")]
+    with pytest.raises(RuntimeError, match="make exited 1"):
+        rl.run(items, [1], tmp_path / "y", runner=fake_runner, maker=lambda a: 1, shower=lambda p: None)
+    rows = (tmp_path / "y" / "runlog.ndjson").read_text().splitlines()
+    assert json.loads(rows[-1])["type"] != "footer"   # the next block refuses an unfinished runlog
 
 
 def test_after_without_needs_still_needs_done(tmp_path):
@@ -432,6 +495,118 @@ def test_analysis_reads_one_runlog_or_all_seven(captured, tmp_path):
     with pytest.raises(SystemExit, match="one of them"):
         vr.read_runlogs(d)
     (d / "runlog.ndjson").unlink()
-    (d / "runlog.b5.ndjson").write_text((captured["out"] / "runlog.b6.ndjson").read_text())
+    rows = (captured["out"] / "runlog.b6.ndjson").read_text().splitlines()
+    (d / "runlog.b5.ndjson").write_text("\n".join([json.dumps({**json.loads(rows[0]), "block": 5})] + rows[1:]) + "\n")
     with pytest.raises(SystemExit, match="two blocks"):
         vr.read_runlogs(d)
+
+
+def blocks_upto(plan, out: Path, last: int, items=None) -> None:
+    for b in range(last + 1):
+        rl.run(items or plan["items"], [20261031, 7, 6], out, runner=fake_runner, block=b, maker=in_process_maker,
+               shower=lambda p: None)
+
+
+def test_a_later_block_from_another_key_or_runs_stops(plan, tmp_path):
+    out = tmp_path / "x"
+    blocks_upto(plan, out, 0)
+    with pytest.raises(ValueError, match="another key"):
+        rl.run(plan["items"], [20261031, 7, 5], out, runner=fake_runner, block=1, maker=in_process_maker,
+               shower=lambda p: None)
+    other = [dict(it) for it in plan["items"]]
+    other[-1] = {**other[-1], "args": other[-1]["args"] + ["--inject", "vk"]}
+    with pytest.raises(ValueError, match="another key, runs.json"):
+        rl.run(other, [20261031, 7, 6], out, runner=fake_runner, block=1, maker=in_process_maker,
+               shower=lambda p: None)
+
+
+def test_an_earlier_block_must_hold_exactly_its_items(plan, tmp_path):
+    out = tmp_path / "x"
+    blocks_upto(plan, out, 0)
+    f = out / "runlog.b0.ndjson"
+    rows = f.read_text().splitlines()
+    f.write_text("\n".join(rows[:1] + rows[2:]) + "\n")   # one L0 item left out
+    with pytest.raises(ValueError, match="exactly the items"):
+        rl.run(plan["items"], [20261031, 7, 6], out, runner=fake_runner, block=1, maker=in_process_maker,
+               shower=lambda p: None)
+
+
+def test_the_analysis_checks_the_runlog_headers(captured, tmp_path):
+    heads = vr.runlog_headers(captured["out"])
+    assert [h["block"] for h in heads] == list(range(7)) and len({h["runs_sha256"] for h in heads}) == 1
+    d = tmp_path / "c"
+    d.mkdir()
+    for b in range(7):
+        (d / f"runlog.b{b}.ndjson").write_text((captured["out"] / f"runlog.b{b}.ndjson").read_text())
+    rows = (d / "runlog.b4.ndjson").read_text().splitlines()
+    h = json.loads(rows[0])
+    for change, msg in (({"key": [20261031, 7, 5]}, "run key"), ({"block": 3}, "block 4"),
+                        ({"runs_sha256": "0" * 64}, "different runs.json")):
+        (d / "runlog.b4.ndjson").write_text("\n".join([json.dumps({**h, **change})] + rows[1:]) + "\n")
+        with pytest.raises(SystemExit, match=msg):
+            vr.read_runlogs(d)
+
+
+def test_the_analysis_reads_the_plans_manifest(plan, captured, tmp_path):
+    (plan["out"] / "manifest.json").write_text(json.dumps({**plan["man"],
+                                                           "persons": {"replay_H_sha256": vr.sha_ids(["a", "b"])}}))
+    heads = vr.runlog_headers(captured["out"])
+    ps = vr.Persons(pool=[], h=["a", "b"], e=[], donors=np.array([]), e_train=np.array([]), looked=0)
+    got = vr.read_plan(plan["out"], heads, ps)
+    assert got["replaced_keys_H"] == plan["man"]["replaced_keys_H"]
+    assert got["runs_sha256"] == heads[0]["runs_sha256"] == runs_file_sha(plan)
+    with pytest.raises(SystemExit, match="replay persons"):
+        vr.read_plan(plan["out"], heads, vr.Persons([], ["c"], [], np.array([]), np.array([]), 0))
+    with pytest.raises(SystemExit, match="another runs.json"):
+        vr.read_plan(plan["out"], [{"runs_sha256": "0" * 64}], ps)
+    (plan["out"] / "manifest.json").unlink()
+
+
+def test_every_llm_item_has_seed_1_and_its_classs_model(plan):
+    m8, m14 = (C7["environment"]["models"][k]["name"] for k in ("8B_class", "14B_class"))
+    n = 0
+    for it in plan["items"]:
+        a = it["args"]
+        if "--llm-stream" in a or "--llm-plan" in a:
+            n += 1
+            assert arg(a, "--seed") == "1"
+            assert arg(a, "--model") == (m8 if "_8B/" in it["name"] else m14)
+        if "--load" in a:
+            assert arg(a, "--load") == m14
+    assert n == 160
+
+
+def test_pool_sha_is_read_or_stops():
+    assert vp.pool_v6_sha(C7) == "a062fddbc4192956f52c6422a81301af4145834bb1c0a37a5aab4dee73f41042"
+    with pytest.raises(SystemExit, match="ids_sha256"):
+        vp.pool_v6_sha({"persons": {"pool": "v6's 200"}})
+
+
+def test_l0s_tie_is_dropped_on_both_sides(captured):
+    caps = vr.load_all(captured["out"])
+    refs = vr.l0_refs(caps)
+    l0 = caps["L0"][0]
+    assert refs[0][0].size == l0.layers["hook"].times.size - 1
+    assert caps["L1_idle"][0].plan.times.size == refs[0][0].size
+
+
+def test_a_later_block_may_use_an_earlier_blocks_failed_plan(tmp_path):
+    items = [{"name": "M1_8B/t03", "args": ["--llm-stream"], "block": 0},
+             {"name": "M1_replay_8B/t03", "args": ["--events", "{out:M1_8B/t03}/schedule.ndjson"], "block": 1,
+              "after": "M1_8B/t03", "needs": ["{out:M1_8B/t03}/schedule.ndjson"]}]
+    out = tmp_path / "x"
+    for b in (0, 1):
+        res = rl.run(items, [1], out, runner=fake_runner, block=b, maker=lambda a: 0, shower=lambda p: None)
+    assert res[0]["result"] == "done"
+    assert json.loads((out / "runlog.b0.ndjson").read_text().splitlines()[1])["result"] == "failed"
+
+
+def test_main_names_the_runs_files_sha256(tmp_path, monkeypatch):
+    f = tmp_path / "runs.json"
+    f.write_text(json.dumps([{"name": "P_idle/c005", "args": [], "block": 1}], indent=1))
+    seen = {}
+    monkeypatch.setattr(rl, "run", lambda items, key, out, **kw: seen.update(kw) or [])
+    monkeypatch.setattr(sys, "argv", ["runlist", "--list", str(f), "--key", "1", "--out", str(tmp_path / "o"),
+                                      "--block", "1"])
+    rl.main()
+    assert seen == {"block": 1, "runs_sha": vp.sha256(f)}

@@ -15,11 +15,15 @@ Dependencies: an item with "after" and no "needs" runs only after its dependency
 after its dependency ended done or failed (both attempts failed: its last folder keeps the plan files) when every file
 of "needs" exists: the analysis checks a failed capture's plan and its dependants against it (prototype_v7_run
 check_plans). Otherwise the item is no_plan (detail missing_dependency or missing_plan_file).
-"make" runs once before the item's first attempt ([python, *make] in the repository); a non-zero exit is no_plan
-(detail make_failed). "show" prints the file and waits for Enter (L0: the prompt the researcher writes on).
+"make" runs once before the item's first attempt ([python, *make] in the repository): exit 0 goes on, exit 3
+(NO_PLAN_EXIT: the dependency left no plan the analysis reads, e.g. works/prototype_v7_plan.py gate-m1) is no_plan
+(detail make_no_plan), and any other exit stops the runlist (a fault of the code or the machine is not a missing
+plan; the runlog is left without its footer and the next block refuses to start). "show" prints the file and waits
+for Enter (L0: the prompt the researcher writes on).
 --block b runs only block b, in its place of the whole order (the order of all blocks is drawn as without --block),
-into the same --out folder, with runlog.b<b>.ndjson; every earlier block must have a finished runlog there, whose
-items are the dependencies of block b. Without --block, every block runs in one runlog.ndjson.
+into the same --out folder, with runlog.b<b>.ndjson; every earlier block must have a finished runlog there, run from
+the same runs.json (its SHA-256 in every header) and key, holding exactly that block's items; they are the
+dependencies of block b. Without --block, every block runs in one runlog.ndjson. --out is made absolute first.
 
 Order: one generator numpy.random.default_rng(key); blocks in ascending order, each block put in the order of
 rng.permutation(len(block)) [仮: one generator for all blocks, drawn block by block]. Then dependencies: an item whose
@@ -44,6 +48,7 @@ the dependency that gives the plan is missing); detail keeps the runlist's own w
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -158,6 +163,14 @@ def default_runner(args: list[str], out: Path) -> str:
     return json.loads(meta.read_text(encoding="utf-8")).get("status", f"failed (exit {r.returncode})")
 
 
+NO_PLAN_EXIT = 3   # works/prototype_v7_plan.py NoPlan
+
+
+def runs_sha256(items: list[dict]) -> str:
+    """The SHA-256 of the runs.json file when main reads one; of the items' canonical JSON otherwise (tests)."""
+    return hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()
+
+
 def default_maker(argv: list[str]) -> int:
     """Make an item's plan before its capture (works/prototype_v7_plan.py derive); returns the exit code."""
     return subprocess.run([sys.executable, *argv], cwd=ROOT).returncode
@@ -171,7 +184,7 @@ def default_shower(path: str) -> None:
 NO_PLAN = "m2_failed"  # an M2 plan failing three times: a counted result of the series, nothing typed, not redone
 RESULT = {"done": "done", "done_after_redo": "redone", "missing_after_redo": "failed", "rename_failed": "failed",
           "m2_failed": "no_plan", "missing_dependency": "no_plan", "missing_plan_file": "no_plan",
-          "make_failed": "no_plan"}
+          "make_no_plan": "no_plan"}
 
 
 def rename(src: Path, dst: Path, tries: int = 10, wait_s: float = 1.0) -> None:
@@ -193,11 +206,13 @@ def redo_args(args: list[str], first: Path) -> list[str]:
     return [x for x in args if x != "--llm-plan"] + ["--events", str(first / "events.ndjson")]
 
 
-def earlier_blocks(out: Path, blocks: list[int], block: int) -> tuple[dict[str, Path], dict[str, Path]]:
-    """The items of the finished runlogs of the blocks before `block`: (done, attempted) as run() keeps them."""
+def earlier_blocks(out: Path, items: list[dict], block: int, key: list[int],
+                   runs_sha: str) -> tuple[dict[str, Path], dict[str, Path]]:
+    """The items of the finished runlogs of the blocks before `block`: (done, attempted) as run() keeps them. Each
+    must be of the same runs.json and key, and hold exactly its block's items."""
     done: dict[str, Path] = {}
     attempted: dict[str, Path] = {}
-    for b in blocks:
+    for b in sorted({it["block"] for it in items}):
         if b >= block:
             continue
         f = out / f"runlog.b{b}.ndjson"
@@ -206,16 +221,24 @@ def earlier_blocks(out: Path, blocks: list[int], block: int) -> tuple[dict[str, 
         rows = [json.loads(ln) for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()]
         if not rows or rows[0].get("type") != "header" or rows[-1].get("type") != "footer":
             raise ValueError(f"{f} did not finish (no header or footer line): ask before going on")
+        h = rows[0]
+        if h.get("key") != key or h.get("runs_sha256") != runs_sha or h.get("block") != b:
+            raise ValueError(f"{f} was run with another key, runs.json or block: ask before going on")
+        names = sorted(r.get("item") for r in rows[1:-1])
+        if names != sorted(it["name"] for it in items if it["block"] == b):
+            raise ValueError(f"{f} does not hold exactly the items of block {b}: ask before going on")
         for r in rows[1:-1]:
             if r.get("result") in ("done", "redone"):
                 done[r["item"]] = attempted[r["item"]] = out / r["item"]
-            elif r.get("detail") == "missing_after_redo":
+            elif r.get("result") == "failed" and (out / r["item"]).is_dir():
                 attempted[r["item"]] = out / r["item"]
     return done, attempted
 
 
 def run(items: list[dict], key: list[int], out: Path, runner=default_runner, block: int | None = None,
-        maker=default_maker, shower=default_shower) -> list[dict]:
+        maker=default_maker, shower=default_shower, runs_sha: str | None = None) -> list[dict]:
+    out = Path(out).resolve()
+    runs_sha = runs_sha or runs_sha256(items)
     seq, moves = order(items, key)
     if block is None:
         out.mkdir(parents=True, exist_ok=False)
@@ -227,16 +250,19 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
         out.mkdir(parents=True, exist_ok=True)
         if (out / "runlog.ndjson").exists():
             raise ValueError(f"{out} holds a runlog of all blocks: --block is not mixed with it")
-        done, attempted = earlier_blocks(out, blocks, block)
+        done, attempted = earlier_blocks(out, items, block, list(key), runs_sha)
         seq = [it for it in seq if it["block"] == block]
         log_name = f"runlog.b{block}.ndjson"
+    if (out / log_name).exists():
+        raise ValueError(f"{out / log_name} exists: block {block} has run (or stopped) before; ask before going on")
     log = open(out / log_name, "x", encoding="utf-8", newline="\n")
 
     def write(rec: dict) -> None:
         log.write(json.dumps(rec) + "\n")
         log.flush()
 
-    write({"type": "header", "key": key, "block": block, "order": [it["name"] for it in seq],
+    write({"type": "header", "key": list(key), "block": block, "runs_sha256": runs_sha,
+           "order": [it["name"] for it in seq],
            "dependency_moves": moves, "start_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     results = []
 
@@ -258,9 +284,13 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
                 continue
         if "make" in it:
             rc = maker(resolve(it["make"], attempted, out))
-            if rc != 0:
-                no_plan(name, "make_failed", exit=rc)
+            if rc == NO_PLAN_EXIT:
+                no_plan(name, "make_no_plan", exit=rc)
                 continue
+            if rc != 0:
+                log.close()
+                raise RuntimeError(f"{name}: make exited {rc} (not a missing plan): the runlist stops; ask before "
+                                   "going on")
         if "show" in it:
             shower(it["show"])
         attempts = []
@@ -290,6 +320,8 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
                 except OSError as e:  # the item cannot be redone in its folder: failed, and the runlist goes on
                     attempts[-1]["rename_error"] = f"{type(e).__name__}: {e}"
                     detail = "rename_failed"
+                    if folder.is_dir():   # the first attempt stays in the folder: its plan files as any failed one
+                        attempted[name] = folder
                     break
                 new_args = redo_args(args, first)
                 if new_args != args:
@@ -314,8 +346,9 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--block", type=int)
     a = ap.parse_args()
-    items = json.loads(a.list.read_text(encoding="utf-8"))
-    res = run(items, a.key, a.out, block=a.block)
+    raw = a.list.read_bytes()
+    items = json.loads(raw.decode("utf-8"))
+    res = run(items, a.key, a.out, block=a.block, runs_sha=hashlib.sha256(raw).hexdigest())
     print(json.dumps(res, indent=1))
     return 0
 
