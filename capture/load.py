@@ -89,7 +89,7 @@ def main() -> int:
     ap.add_argument("--prompt-file", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
-    prompt = ollama.essay_prompt(a.prompt_file.read_text(encoding="utf-8").strip())
+    prompt = ollama.essay_prompt(a.prompt_file.read_text(encoding="utf-8-sig").strip())  # a BOM is not the task
     f = open(a.out, "x", encoding="utf-8", newline="\n")
     f.write(json.dumps({"type": "header", "model": ollama.model_record(a.model), "prompt": prompt,
                         "temperature": ollama.TEMPERATURE, "time_ns": time.time_ns()}) + "\n")

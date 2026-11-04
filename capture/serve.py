@@ -36,6 +36,9 @@ class State:
         self.batches_saved: set[tuple] = set()
         self.saved_entries: dict = {}   # flush id -> entries written
         self.duplicates: dict = {}      # flush id -> batches dropped as sent again
+        # errors of the file while a batch was written (part of it may be on disk, and a resend may write it again):
+        # sent to the session with the page's count, which interrupts the capture (Mac review of returns-v3)
+        self.write_errors = 0
 
     def keep(self, what: str, body: dict) -> dict:
         """Write one page message. Returns the acknowledgement sent back to the page."""
@@ -51,15 +54,19 @@ class State:
                 # nothing (a resent batch is then not written twice; Mac review of returns-v3)
                 text = "".join([json.dumps({"type": "log", **body, **stamp, "n": len(entries)}) + "\n",
                                 *(json.dumps({"type": "key", **e}) + "\n" for e in entries)])
-                self.f.write(text)
-                self.f.flush()
+                try:
+                    self.f.write(text)
+                    self.f.flush()
+                except OSError:
+                    self.write_errors += 1
+                    raise
                 self.batches_saved.add((fid, batch))
                 self.saved_entries[fid] = self.saved_entries.get(fid, 0) + len(entries)
                 body = {**body, "n": len(entries)}
             elif what == "flushed":  # the page's count of what it sent: kept in the state only, read by the session
                 fid = body.get("flush")
                 body = {**body, "saved": self.saved_entries.get(fid, 0),
-                        "duplicates_dropped": self.duplicates.get(fid, 0)}
+                        "duplicates_dropped": self.duplicates.get(fid, 0), "write_errors": self.write_errors}
             else:
                 self.f.write(json.dumps({"type": what, **body, **stamp}) + "\n")
                 self.f.flush()

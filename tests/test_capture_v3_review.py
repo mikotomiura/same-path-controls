@@ -16,7 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from capture import llm_plan, load, serve, session, summary  # noqa: E402
+from capture import llm_plan, load, remote, runlist, serve, session, summary  # noqa: E402
 from tests.test_capture_llm import two_calls  # noqa: E402
 
 
@@ -59,7 +59,7 @@ class Flag:
         return self.after is not None and self.n > self.after
 
 
-@pytest.mark.parametrize("after", [0, 1, 3])  # before the essay; before the gaps; before attempt 2's essay
+@pytest.mark.parametrize("after", [0, 1, 3])  # before the essay; before the gaps; before attempt 2's gaps
 def test_m2_a_stop_ends_the_planning_before_the_next_call(after):
     bodies, log = [], io.StringIO()
     gen = two_calls([("ab", '{"gaps_ms": [0]}')] * 3, bodies)
@@ -146,9 +146,126 @@ def test_the_hook_reports_a_foreign_injected_key_from_its_callback_without_outpu
 def test_a_remote_desktop_host_is_found_in_the_process_list():
     listing = ('"System Idle Process","0","Services","0","8 K"\n'
                '"remoting_host.exe","5124","Console","1","21,340 K"\n"chrome.exe","9","Console","1","9 K"\n')
-    assert session.remote_hosts_running(listing) == ["remoting_host.exe"]
-    assert session.remote_hosts_running(listing.replace("remoting_host", "notepad")) == []
-    assert session.remote_hosts_running('"REMOTING_HOST.EXE","1","Console","1","1 K"') == ["remoting_host.exe"]
+    assert remote.hosts_in(listing) == ["remoting_host.exe"]
+    assert remote.hosts_in(listing.replace("remoting_host", "notepad")) == []
+    assert remote.hosts_in('"REMOTING_HOST.EXE","1","Console","1","1 K"') == ["remoting_host.exe"]
+    src = (ROOT / "capture" / "session.py").read_text(encoding="utf-8")
+    i = src.index("hosts = remote.running()")
+    assert i < src.index("out.mkdir(parents=True, exist_ok=False)") and "return remote.REMOTE_HOST_EXIT" in src[i:i + 300]
+
+
+def _live_items():
+    return [{"name": "L0/e0", "args": ["--live"], "after": None, "block": 0},
+            {"name": "L1_idle/e0", "args": ["--events", "x"], "after": "L0/e0", "block": 0}]
+
+
+def test_a_runlist_with_a_live_item_does_not_start_while_a_remote_host_runs(tmp_path):
+    calls = []
+    with pytest.raises(RuntimeError, match="remote-desktop host"):
+        runlist.run(_live_items(), [1], tmp_path / "run", runner=lambda a, o: calls.append(o) or "done",
+                    remote_check=lambda: ["remoting_host.exe"])
+    assert calls == [] and not (tmp_path / "run" / "runlog.ndjson").exists()  # nothing written: run it again
+    # without a live item, no check
+    runlist.run([{"name": "P5/c0", "args": [], "after": None, "block": 0}], [1], tmp_path / "run2",
+                runner=lambda a, o: "done", remote_check=lambda: 1 / 0)
+
+
+def test_a_remote_host_found_by_the_session_stops_the_runlist_and_counts_nothing(tmp_path):
+    calls = []
+
+    def runner(args, out):
+        calls.append(out.name)
+        return runlist.REMOTE_HOST
+    with pytest.raises(RuntimeError, match="the runlist stops here"):
+        runlist.run(_live_items(), [1], tmp_path / "run", runner=runner, remote_check=lambda: [])
+    rows = [json.loads(x) for x in (tmp_path / "run" / "runlog.ndjson").read_text().splitlines()]
+    assert calls == ["e0"] and [r["type"] for r in rows] == ["header", "stopped"]  # no item line, no redo
+
+
+def test_the_live_wait_stops_on_capture_stop_and_on_a_dead_hook():
+    src = (ROOT / "capture" / "session.py").read_text(encoding="utf-8")
+    loop = src[src.index("while not hook.end.wait(0.05):"):src.index("        elif a.llm_stream:")]
+    assert "hook.foreign.is_set()" in loop and "stopper.is_set()" in loop and "hook.p.poll()" in loop
+    assert "stopper.esc = hook.esc if hook and not a.live else None" in src  # Esc is a press of L0
+
+
+def test_the_hook_reader_sets_foreign_from_the_hook_s_line():
+    h = session.Hook.__new__(session.Hook)
+    h.esc, h.end, h.foreign, h.done = (threading.Event() for _ in range(4))
+    h.p = type("P", (), {"stdout": io.StringIO("ESC 1\nFOREIGN 2\nDONE\n")})()
+    h._read()
+    assert h.esc.is_set() and h.foreign.is_set() and h.done.is_set() and not h.end.is_set()
+
+
+def test_the_end_before_typing_tells_a_stop_from_an_error():
+    st = session.ended_before_typing(llm_plan.PlanStopped("x"), "capture.stop")
+    assert st == {"status": "interrupted", "stopped_by": "capture.stop", "interrupted": {"during": "M2 planning"}}
+    er = session.ended_before_typing(llm_plan.OllamaError("ollama: HTTPError: 500", {"body": {"prompt": "secret"}}),
+                                     None)
+    assert er == {"status": "failed", "error": "OllamaError: ollama: HTTPError: 500"}  # the record is not in meta
+    assert session.ended_before_typing(ConnectionRefusedError("no"), None)["status"] == "failed"
+    src = (ROOT / "capture" / "session.py").read_text(encoding="utf-8")
+    body = src[src.index("    res = None\n    try:"):src.index("    kids: list = []")]
+    assert "meta.update(ended_before_typing(e, stopper.by))" in body and "return INTERRUPTED" in body
+    assert "ollama.model_record(a.model)" in body  # the LLM's header is inside the try: its error is written
+
+
+def test_m2_a_stop_during_the_last_attempt_is_a_stop_not_the_counted_failure():
+    class LateFlag:
+        def __init__(self):
+            self.n = 0
+
+        def is_set(self):  # not set before any of the 6 calls, set after the last
+            self.n += 1
+            return self.n > 6
+    log = io.StringIO()
+    with pytest.raises(llm_plan.PlanStopped):
+        llm_plan.make_plan("m", "Write.", 1, log, generate=two_calls([("ab", '{"gaps_ms": [0]}')] * 3),
+                           stop=LateFlag())
+    assert json.loads(log.getvalue().splitlines()[-1])["stopped"] is True
+
+
+def test_m2_summary_of_attempts_skips_stopped_and_raised_lines(tmp_path):
+    f = tmp_path / "llm.ndjson"
+    rows = [{"type": "header"}, {"type": "attempt", "attempt": 0, "ok": False, "stopped": True},
+            {"type": "attempt", "attempt": 0, "ok": False, "raised": True, "reason": "x", "essay": {"error": "x"}}]
+    f.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert llm_plan.summarize_attempts(f) == []
+
+
+def test_ollama_error_reads_as_its_message():
+    assert str(llm_plan.OllamaError("ollama: X", {"body": {"prompt": "long"}})) == "ollama: X"
+
+
+def test_a_footer_without_counts_is_not_complete():
+    assert summary.hook_log([{"type": "footer"}])["complete"] is False
+    assert summary.hook_log([{"type": "footer", "n_raw": 3, "n_written": 3}])["complete"] is True
+    assert summary.hook_log([{"type": "footer", "n_raw": "3", "n_written": "3"}])["complete"] is False
+
+
+def test_a_write_error_of_the_page_log_interrupts_the_capture(tmp_path):
+    st = serve.State(tmp_path / "page.ndjson")
+    real = st.f
+
+    class Broken:
+        def write(self, t):
+            raise OSError("disk full")
+
+        def flush(self):
+            pass
+    st.f = Broken()
+    with pytest.raises(OSError):
+        st.keep("log", {"flush": 1, "batch": 0, "entries": [{"t_ms": 1.0}]})
+    st.f = real
+    st.keep("flushed", {"flush": 1, "sent": 1})
+    assert st.last["flushed"]["write_errors"] == 1
+    real.close()
+    s = {"planned": 1, "hook": {"n": 1}, "page": {"n": 1}}
+    p = summary.problems(s, {"mode": "events", "page_log": {"sent": 1, "saved": 1, "batches_failed": 0,
+                                                            "write_errors": 1}})
+    assert p["page_log_not_all_saved"]["write_errors"] == 1
+    src = (ROOT / "capture" / "session.py").read_text(encoding="utf-8")
+    assert '"duplicates_dropped", "write_errors")' in src
 
 
 # --- the page's batch is written whole or not at all ---

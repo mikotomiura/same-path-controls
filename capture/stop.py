@@ -30,6 +30,7 @@ def _kernel32():
     k.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
     k.OpenEventW.restype = wintypes.HANDLE
     k.SetEvent.argtypes = [wintypes.HANDLE]
+    k.SetEvent.restype = wintypes.BOOL
     k.CloseHandle.argtypes = [wintypes.HANDLE]
     k.ResetEvent.argtypes = [wintypes.HANDLE]
     return k
@@ -71,7 +72,8 @@ def signal(name: str = EVENT_NAME) -> bool:
     if not h:
         return False
     try:
-        k.SetEvent(h)
+        if not k.SetEvent(h):
+            raise OSError(f"SetEvent failed: {ctypes.get_last_error()}")
     finally:
         k.CloseHandle(h)
     return True

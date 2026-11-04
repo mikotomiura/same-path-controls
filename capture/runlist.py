@@ -154,10 +154,16 @@ def resolve(args: list[str], done: dict[str, Path], root: Path | None = None) ->
     return out
 
 
+REMOTE_HOST = "remote_host"  # the session's status when a remote-desktop host stopped a live capture: the runlist stops
+
+
 def default_runner(args: list[str], out: Path) -> str:
     """Run one capture; returns the status written in its meta.json ('done', 'interrupted', 'failed', ...)."""
+    from capture import remote
     r = subprocess.run([sys.executable, "-m", "capture.session", *args, "--out", str(out)], cwd=ROOT)
     meta = out / "meta.json"
+    if r.returncode == remote.REMOTE_HOST_EXIT and not meta.exists():
+        return REMOTE_HOST
     if not meta.exists():
         return f"failed (exit {r.returncode}, no meta.json)"
     return json.loads(meta.read_text(encoding="utf-8")).get("status", f"failed (exit {r.returncode})")
@@ -235,8 +241,14 @@ def earlier_blocks(out: Path, items: list[dict], block: int, key: list[int],
     return done, attempted
 
 
+def default_remote_check() -> list[str]:
+    from capture import remote
+    return remote.running()
+
+
 def run(items: list[dict], key: list[int], out: Path, runner=default_runner, block: int | None = None,
-        maker=default_maker, shower=default_shower, runs_sha: str | None = None) -> list[dict]:
+        maker=default_maker, shower=default_shower, runs_sha: str | None = None,
+        remote_check=default_remote_check) -> list[dict]:
     out = Path(out).resolve()
     runs_sha = runs_sha or runs_sha256(items)
     seq, moves = order(items, key)
@@ -255,6 +267,11 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
         log_name = f"runlog.b{block}.ndjson"
     if (out / log_name).exists():
         raise ValueError(f"{out / log_name} exists: block {block} has run (or stopped) before; ask before going on")
+    if any("--live" in it["args"] for it in seq):  # before the runlog: the block can simply be run again (decision 5)
+        hosts = remote_check()
+        if hosts:
+            from capture import remote
+            raise RuntimeError(remote.message(hosts) + " The runlist did not start.")
     log = open(out / log_name, "x", encoding="utf-8", newline="\n")
 
     def write(rec: dict) -> None:
@@ -309,6 +326,12 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
             if status == NO_PLAN:
                 detail = NO_PLAN
                 break
+            if status == REMOTE_HOST:  # a host started after the check above: stop, never a failed item (decision 5)
+                from capture import remote
+                write({"type": "stopped", "item": name, "reason": "remote_host"})
+                log.close()
+                raise RuntimeError(f"{name}: a remote-desktop host is running; the runlist stops here (the item is "
+                                   f"not counted). {remote.message(['remoting_host.exe'])} Ask before going on.")
             if a == 0:  # the interrupted attempt is kept beside, and the redo takes the item's folder
                 first = folder.with_name(folder.name + ".try1")
                 try:

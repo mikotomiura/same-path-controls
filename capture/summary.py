@@ -144,7 +144,9 @@ def hook_log(hook: list[dict]) -> dict:
     ft = hook[-1] if hook and hook[-1].get("type") == "footer" else None
     if ft is None:
         return {"complete": False, "footer": False}
-    ok = ft.get("n_raw") == ft.get("n_written") and not ft.get("writer_error")
+    n_raw, n_written = ft.get("n_raw"), ft.get("n_written")
+    ok = (isinstance(n_raw, int) and isinstance(n_written, int) and n_raw == n_written >= 0
+          and not ft.get("writer_error"))
     return {"complete": ok, "footer": True, "n_raw": ft.get("n_raw"), "n_written": ft.get("n_written"),
             **({"writer_error": ft["writer_error"]} if ft.get("writer_error") else {})}
 
@@ -168,9 +170,10 @@ def problems(s: dict, meta: dict) -> dict:
     if meta.get("hook_installed", True) and hl is not None and not hl.get("complete"):
         out["hook_log_incomplete"] = hl
     pl = meta.get("page_log")
-    if pl is not None and (pl.get("sent") != pl.get("saved") or pl.get("batches_failed")):
+    if pl is not None and (pl.get("sent") != pl.get("saved") or pl.get("batches_failed") or pl.get("write_errors")):
         out["page_log_not_all_saved"] = {"sent": pl.get("sent"), "saved": pl.get("saved"),
-                                         "batches_failed": pl.get("batches_failed")}
+                                         "batches_failed": pl.get("batches_failed"),
+                                         **({"write_errors": pl["write_errors"]} if pl.get("write_errors") else {})}
     if meta.get("page_opens", 1) > 1:
         out["page_reloaded"] = meta["page_opens"]
     if (s.get("page") or {}).get("not_in_box", 0) > 0:

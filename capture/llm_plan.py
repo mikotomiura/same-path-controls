@@ -11,7 +11,10 @@ A read timeout of ollama (PLAN_TIMEOUT_S per call: the model generated for that 
 attempt. Any other error of ollama (connection refused, HTTP 4xx/5xx, an answer cut short or not JSON) is an error of
 the capture, not of the model: it is raised, the capture ends 'failed' and the runlist redoes it once (the researcher's
 decision of 2026-11-04, after the Mac review of returns-v3; deviation D1).
-A stop (Esc or capture.stop) before a call ends the planning with PlanStopped: the capture ends 'interrupted'.
+A stop (capture.stop: the hook, hence Esc, starts only after the planning) is looked at before each call and after the
+last attempt; once seen, the planning ends with PlanStopped and the capture ends 'interrupted'. A call already running
+is not cut (each may last up to PLAN_TIMEOUT_S); a plan that passes while a stop was asked is typed, and the stop then
+ends the capture before its first press.
 The plan is made before typing; the LLM is unloaded before the plan is typed, and `ollama ps` is recorded before the
 capture.
 
@@ -110,7 +113,11 @@ class PlanStopped(Exception):
 
 
 class OllamaError(RuntimeError):
-    """An error of ollama that is not the model's: the capture fails (and is redone), no attempt is counted."""
+    """An error of ollama that is not the model's: the capture fails (and is redone), no attempt is counted.
+    args = (message, the call's record); str() is the message only (the record holds the prompt and the essay)."""
+
+    def __str__(self) -> str:
+        return str(self.args[0])
 
 
 def is_read_timeout(e: BaseException) -> bool:
@@ -191,6 +198,9 @@ def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None, 
         rec["gen_ns"] = rec["essay"]["gen_ns"] + rec["gaps"]["gen_ns"]
         llm_log.write(json.dumps({**rec, "ok": True}) + "\n")
         return {"ok": True, "attempts": a + 1, "failures": failures, "presses": presses, "skipped_chars": skipped}
+    if stop is not None and stop.is_set():  # asked during the last call: a stop, not the counted failure of M2
+        llm_log.write(json.dumps({"type": "attempt", "attempt": MAX_ATTEMPTS, "ok": False, "stopped": True}) + "\n")
+        raise PlanStopped("stopped during the last attempt")
     return {"ok": False, "attempts": MAX_ATTEMPTS, "failures": failures, "presses": [], "skipped_chars": 0}
 
 
@@ -198,7 +208,7 @@ def summarize_attempts(llm_ndjson: Path) -> list[dict]:
     out = []
     for ln in Path(llm_ndjson).read_text(encoding="utf-8").splitlines():
         r = json.loads(ln)
-        if r.get("type") != "attempt":
+        if r.get("type") != "attempt" or r.get("stopped") or r.get("raised"):
             continue
         e, g = r.get("essay") or {}, r.get("gaps")
         out.append({"attempt": r["attempt"], "seed": e.get("body", {}).get("options", {}).get("seed"), "ok": r["ok"],
