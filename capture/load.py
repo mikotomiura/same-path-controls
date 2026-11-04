@@ -4,7 +4,7 @@
 
 Generates from the prompt again and again; the output text is discarded (only its token count and times are kept).
 A generation that ends before the capture is restarted with the same prompt, and the restarts are counted. Each
-generation uses seed = its number ([仮] the spec fixes no seed for the load).
+generation uses seed = its number (decided by the researcher, 2026-11-04; the spec fixes no seed for the load).
 """
 
 from __future__ import annotations

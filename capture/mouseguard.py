@@ -1,4 +1,5 @@
-"""Hold the mouse while presses are typed (a safety measure asked by the researcher on 2026-11-04), in its own process.
+"""Hold the mouse while presses are typed (asked by the researcher on 2026-11-04 and used in every production
+capture, to be written into the conditions), in its own process.
 
     python -m capture.mouseguard      (prints 'READY <thread id>'; stopped with PostThreadMessageW(WM_QUIT))
 

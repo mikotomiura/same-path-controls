@@ -7,7 +7,8 @@
   common: --load <model> --load-prompt-file <p.txt>   background inference load
           --no-hook                                   the browser page only (P_nohook, amendments B11 and B14)
           --browser chrome|edge  --inject unicode|vk  --auto-focus
-          --no-mouse-guard                            do not hold the mouse while typing (held by default)
+          --no-mouse-guard                            do not hold the mouse while typing (held by default; held in
+                                                      every production capture: the researcher, 2026-11-04)
 
 Order: (M2: the plan is made and the model unloaded first) monitor -> load -> server -> browser on the page -> hook ->
 'click in the box and press Enter' (or --auto-focus: the session brings the page to the front and focuses the box)
@@ -205,9 +206,9 @@ def parse(argv=None) -> argparse.Namespace:
     ap.add_argument("--load")
     ap.add_argument("--load-prompt-file", type=Path)
     ap.add_argument("--no-hook", action="store_true")
-    ap.add_argument("--browser", default="chrome", choices=["chrome", "edge"])  # [仮] chrome (returns/questions.md)
+    ap.add_argument("--browser", default="chrome", choices=["chrome", "edge"])  # Chrome, decided by the researcher 2026-11-04
     ap.add_argument("--inject", default="unicode", choices=["unicode", "vk"])
-    ap.add_argument("--auto-focus", action="store_true")
+    ap.add_argument("--auto-focus", action="store_true")  # the start used in production (researcher, 2026-11-04)
     ap.add_argument("--no-mouse-guard", action="store_true")
     ap.add_argument("--ready-timeout", type=float, default=300.0)
     a = ap.parse_args(argv)

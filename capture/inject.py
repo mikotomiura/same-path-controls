@@ -147,6 +147,7 @@ def type_schedule(presses: list[dict], method: str, stop=None, t0_ns: int | None
                   guard_hwnd: int | None = None) -> tuple[list[dict], dict]:
     """Type the presses at T0 + t_ms. stop: an object with is_set() (the hook's Esc), checked before each press.
     guard_hwnd: the page's window; before each press the foreground window must be it, otherwise typing stops at once
+    and the capture is interrupted (redone once by the runlist: the researcher, 2026-11-04)
     (a press must never reach another window: in the first probe on the work PC, with the IME turned on, the presses
     went to another window although the page had reported focus just before). Returns one record per press attempted
     and a summary."""

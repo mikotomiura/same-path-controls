@@ -62,7 +62,7 @@ def kind_of_key(key: str) -> str:
 
 
 def typable(c: str) -> bool:
-    """A character the schedule can hold: printable ASCII (0x20-0x7E). [仮] Other characters (curly quotes, dashes,
+    """A character the schedule can hold: printable ASCII (0x20-0x7E). [decided by the researcher, 2026-11-04] Other characters (curly quotes, dashes,
     letters outside ASCII) are skipped and counted by the makers that read text (llm_stream, llm_plan), so that the
     same characters are typed under either injection method (returns/questions.md)."""
     return len(c) == 1 and 0x20 <= ord(c) <= 0x7E

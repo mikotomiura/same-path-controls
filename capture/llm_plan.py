@@ -5,9 +5,9 @@ points), the first 0, every gap finite and non-negative. At most 3 attempts per 
 failure is counted and nothing is typed (no replacement). The plan is made before typing; the LLM is unloaded before
 the plan is typed, and `ollama ps` is recorded before the capture.
 
-[仮] Attempts 2 and 3 cannot reuse the seed (with the same seed and options the output repeats), so attempt a
+[decided by the researcher, 2026-11-04] Attempts 2 and 3 cannot reuse the seed (with the same seed and options the output repeats), so attempt a
 (a = 0, 1, 2) uses the option seed `seed + 1000 * a` (returns/questions.md).
-[仮] Characters the schedule cannot hold are skipped and counted, their gap is not added to the next press (the other
+[decided by the researcher, 2026-11-04] Characters the schedule cannot hold are skipped and counted, their gap is not added to the next press (the other
 presses keep their times, as in M1).
 """
 

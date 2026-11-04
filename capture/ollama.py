@@ -38,7 +38,7 @@ def version() -> str:
 
 def model_record(model: str) -> dict:
     """Name, digest and details. ollama 0.40's /api/show holds no digest, so it is taken from /api/tags (the
-    manifest digest), with the GGUF blob named in the modelfile's FROM line beside it."""
+    manifest digest; the researcher's decision of 2026-11-04), with the GGUF blob named in the modelfile's FROM line beside it."""
     show = _post("/api/show", {"model": model}, timeout=60)
     tags = {m["name"]: m for m in _get("/api/tags")["models"]}
     t = tags.get(model) or tags.get(model + ":latest")
