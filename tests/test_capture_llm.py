@@ -101,53 +101,93 @@ def test_typist_stops_when_focus_is_lost():
 
 
 @pytest.mark.parametrize("raw,reason", [
-    ('{"text": "abc", "gaps_ms": [0, 1]}', "len"),
-    ('{"text": "abc", "gaps_ms": [0, -1, 2]}', "negative"),
-    ('{"text": "abc", "gaps_ms": [0, 1e999, 2]}', "finite"),
-    ('{"text": "abc", "gaps_ms": [5, 1, 2]}', "first"),
-    ('{"text": "abc", "gaps_ms": [0, "1", 2]}', "finite"),
+    ('{"gaps_ms": [0, 1]}', "len"),
+    ('{"gaps_ms": [0, -1, 2]}', "negative"),
+    ('{"gaps_ms": [0, 1e999, 2]}', "finite"),
+    ('{"gaps_ms": [5, 1, 2]}', "first"),
+    ('{"gaps_ms": [0, "1", 2]}', "finite"),
     ('{"text": "abc"}', "object"),
     ("not json", "JSON"),
 ])
 def test_m2_check_rejects(raw, reason):
     with pytest.raises(ValueError, match=reason):
-        llm_plan.check_plan(raw)
+        llm_plan.check_plan("abc", raw)
 
 
 def test_m2_check_accepts_and_builds_the_schedule():
-    text, gaps = llm_plan.check_plan('{"text": "a b\\u2014c", "gaps_ms": [0, 100, 50, 30, 20]}')
+    text, gaps = llm_plan.check_plan("a b\u2014c", '{"gaps_ms": [0, 100, 50, 30, 20]}')
     p, skipped = llm_plan.presses_of(text, gaps)
     assert skipped == 1  # the em dash
     assert [x["key"] for x in p] == ["a", " ", "b", "c"]
     assert [x["t_ms"] for x in p] == [0, 100, 150, 200]
 
 
-def test_m2_three_attempts_then_counted_failure():
-    seeds = []
+def two_calls(pairs, bodies=None):
+    """A fake ollama for M2: each attempt is (essay answer, gaps answer); an answer that is an exception is raised."""
+    answers = iter([x for pair in pairs for x in pair])
 
     def gen(body):
-        seeds.append(body["options"]["seed"])
-        return {"response": '{"text": "ab", "gaps_ms": [0]}'}
+        if bodies is not None:
+            bodies.append(body)
+        a = next(answers)
+        if isinstance(a, BaseException):
+            raise a
+        return a if isinstance(a, dict) else {"response": a}
+    return gen
 
+
+def test_m2_asks_the_essay_then_its_gaps_with_a_schema_of_its_length():
+    bodies = []
+    r = llm_plan.make_plan("m", "Write.", 1, io.StringIO(), generate=two_calls([("  ab \n", '{"gaps_ms": [0, 80]}')], bodies))
+    assert r["ok"] and [x["t_ms"] for x in r["presses"]] == [0, 80]
+    essay, gaps = bodies
+    assert essay["prompt"] == "Write." and "format" not in essay
+    assert gaps["prompt"] == llm_plan.gaps_prompt("ab") and "\n\nab\n\n" in gaps["prompt"] and " 2 characters" in gaps["prompt"]
+    items = gaps["format"]["properties"]["gaps_ms"]
+    assert items["minItems"] == items["maxItems"] == 2 and items["items"] == {"type": "integer", "minimum": 0}
+    assert essay["options"] == gaps["options"] == {"temperature": 0.7, "seed": 1}
+
+
+def test_m2_three_attempts_then_counted_failure():
+    bodies = []
     log = io.StringIO()
-    r = llm_plan.make_plan("m", "Write.", 7, log, generate=gen)
+    r = llm_plan.make_plan("m", "Write.", 7, log, generate=two_calls([("ab", '{"gaps_ms": [0]}')] * 3, bodies))
     assert not r["ok"] and r["attempts"] == 3 and r["presses"] == []
-    assert seeds == [7, 1007, 2007]
+    assert [b["options"]["seed"] for b in bodies] == [7, 7, 1007, 1007, 2007, 2007]
     assert len(log.getvalue().splitlines()) == 3
 
 
 def test_m2_stops_at_the_first_valid_plan():
-    answers = iter(['{"text": "ab", "gaps_ms": [0]}', '{"text": "ab", "gaps_ms": [0, 80]}'])
-    r = llm_plan.make_plan("m", "Write.", 1, io.StringIO(), generate=lambda b: {"response": next(answers)})
+    r = llm_plan.make_plan("m", "Write.", 1, io.StringIO(),
+                           generate=two_calls([("ab", '{"gaps_ms": [0]}'), ("ab", '{"gaps_ms": [0, 80]}')]))
     assert r["ok"] and r["attempts"] == 2 and [x["t_ms"] for x in r["presses"]] == [0, 80]
 
 
 def test_m2_plan_of_untypable_characters_only_is_a_failed_attempt():
-    answers = iter(['{"text": "\\u2014\\u2019", "gaps_ms": [0, 10]}', '{"text": "ab", "gaps_ms": [0, 80]}'])
     log = io.StringIO()
-    r = llm_plan.make_plan("m", "Write.", 1, log, generate=lambda b: {"response": next(answers)})
+    r = llm_plan.make_plan("m", "Write.", 1, log, generate=two_calls([("\u2014\u2019", '{"gaps_ms": [0, 10]}'),
+                                                                        ("ab", '{"gaps_ms": [0, 80]}')]))
     assert r["ok"] and r["attempts"] == 2 and r["failures"] == ["no typable character (2 skipped)"]
     assert '"ok": false' in log.getvalue().splitlines()[0]
+
+
+def test_m2_a_timeout_of_ollama_is_a_failed_attempt_not_an_error():
+    import json
+    log = io.StringIO()
+    r = llm_plan.make_plan("m", "Write.", 1, log, generate=two_calls([(TimeoutError("timed out"),),
+                                                                        ("ab", OSError("connection reset")),
+                                                                        ("ab", '{"gaps_ms": [0, 80]}')]))
+    assert r["ok"] and r["attempts"] == 3
+    assert r["failures"] == ["ollama: TimeoutError: timed out", "ollama: OSError: connection reset"]
+    first, second = (json.loads(x) for x in log.getvalue().splitlines()[:2])
+    assert "gaps" not in first and second["essay"]["response"] == "ab" and "error" in second["gaps"]
+
+
+def test_m2_an_empty_essay_is_a_failed_attempt():
+    bodies = []
+    r = llm_plan.make_plan("m", "Write.", 1, io.StringIO(),
+                           generate=two_calls([(" \n",), ("ab", '{"gaps_ms": [0, 80]}')], bodies))
+    assert r["ok"] and r["failures"] == ["empty essay"] and len(bodies) == 3
 
 
 class FakeStream:
@@ -221,27 +261,24 @@ def test_m1_stream_failure_stops_the_typist_before_raising(monkeypatch):
 def test_planning_only_command_records_each_attempt(tmp_path):
     task = tmp_path / "task.txt"
     task.write_text("Write about a season.")
-    answers = iter([{"response": '{"text": "ab", "gaps_ms": [0]}', "done_reason": "length", "eval_count": 9},
-                    {"response": '{"text": "ab", "gaps_ms": [0, 40]}', "done_reason": "stop", "eval_count": 7}])
     bodies = []
-
-    def gen(body):
-        bodies.append(body)
-        return next(answers)
+    gen = two_calls([({"response": "ab", "done_reason": "stop", "eval_count": 3},
+                      {"response": '{"gaps_ms": [0]}', "done_reason": "length", "eval_count": 9}),
+                     ({"response": "ab", "done_reason": "stop", "eval_count": 3},
+                      {"response": '{"gaps_ms": [0, 40]}', "done_reason": "stop", "eval_count": 7})], bodies)
     llm_plan.main(["--model", "m", "--prompt-file", str(task), "--seed", "1", "--out", str(tmp_path / "o"),
                    "--num-predict", "4096"], generate=gen)
     r = json.loads((tmp_path / "o" / "result.json").read_text())
     assert r["ok"] and r["attempts"] == 2 and r["n_presses"] == 2
-    assert [(x["ok"], x["seed"], x["done_reason"]) for x in r["per_attempt"]] == [(False, 1, "length"),
-                                                                                 (True, 1001, "stop")]
+    assert [(x["ok"], x["seed"], x["gaps_done_reason"], x["essay_chars"]) for x in r["per_attempt"]] == [
+        (False, 1, "length", 2), (True, 1001, "stop", 2)]
     assert all(b["options"]["num_predict"] == 4096 for b in bodies)
 
 
 def test_the_production_plan_sets_no_num_predict():
     bodies = []
-    llm_plan.make_plan("m", "Write.", 1, io.StringIO(),
-                       generate=lambda b: bodies.append(b) or {"response": '{"text": "a", "gaps_ms": [0]}'})
-    assert set(bodies[0]["options"]) == {"temperature", "seed"}
+    llm_plan.make_plan("m", "Write.", 1, io.StringIO(), generate=two_calls([("a", '{"gaps_ms": [0]}')], bodies))
+    assert all(set(b["options"]) == {"temperature", "seed"} for b in bodies) and len(bodies) == 2
 
 
 @pytest.mark.parametrize("key", ["seed", "temperature"])

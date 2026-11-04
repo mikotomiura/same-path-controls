@@ -1,16 +1,22 @@
 """M2: the LLM writes an essay and the gap before each of its characters (capture spec section 4, conditions series.M2).
 
-The plan {"text": ..., "gaps_ms": [...]} is asked with format json and checked: len(gaps_ms) == len(text) (code
-points), the first 0, every gap finite and non-negative. At most 3 attempts per prompt and seed; after 3 failures the
-failure is counted and nothing is typed (no replacement). The plan is made before typing; the LLM is unloaded before
-the plan is typed, and `ollama ps` is recorded before the capture.
+One attempt is two calls to ollama with the same seed (the researcher's decision of 2026-11-04, option A of
+returns-v3): (1) the essay, with the essay prompt of M1 and no format; (2) the gaps, with GAPS_PROMPT on the essay
+(outer whitespace stripped) and a JSON schema whose gaps_ms has exactly one integer >= 0 per character of the essay
+(minItems = maxItems = its code points). The schema makes ollama stop at the last gap: asked in one JSON object with
+the essay, the gaps of 7B and 14B ran on as 0, 0, 0... to the length limit (returns-v3/m2-check.md). The gaps are still
+checked: len(gaps_ms) == len(text) (code points), the first 0, every gap finite and non-negative.
+At most 3 attempts per prompt and seed; after 3 failures the failure is counted and nothing is typed (no replacement).
+An HTTP error or a timeout of ollama (PLAN_TIMEOUT_S per call) is a failed attempt, not an error of the capture.
+The plan is made before typing; the LLM is unloaded before the plan is typed, and `ollama ps` is recorded before the
+capture.
 
 Planning only (no typing; the check of decision 3 of .steering/20261104-v7-capture-returns before the production):
     python -m capture.llm_plan --model <m> --prompt-file <task.txt> --seed 1 --out <new folder> [--num-predict N]
 writes llm.ndjson (every attempt, as session --llm-plan) and result.json (per attempt: ok, reason, characters of the
-answer, ollama's done_reason and eval_count, seconds). --num-predict is for an extra record only: the production
-(session --llm-plan) never sets it. The exit code is 0 whether or not the plan passed (result.json says which): a
-check, not a capture.
+essay and of the gaps answer, ollama's done_reason and eval_count of both calls, seconds). --num-predict is for an
+extra record only: the production (session --llm-plan) never sets it. The exit code is 0 whether or not the plan
+passed (result.json says which): a check, not a capture.
 
 [decided by the researcher, 2026-11-04] Attempts 2 and 3 cannot reuse the seed (with the same seed and options the output repeats), so attempt a
 (a = 0, 1, 2) uses the option seed `seed + 1000 * a` (returns/questions.md).
@@ -30,28 +36,35 @@ from pathlib import Path
 from capture import events
 
 MAX_ATTEMPTS = 3
-JSON_INSTRUCTION = (" Return only a JSON object {\"text\": \"<the essay>\", \"gaps_ms\": [<numbers>]} where gaps_ms has "
-                    "one number for each character of text: the pause in milliseconds before typing that character, "
-                    "the first 0.")
+PLAN_TIMEOUT_S = 1800  # per call; the schema bounds the answer, so this only catches an ollama that hangs
+GAPS_PROMPT = ("Here is a text that a person will type on a keyboard:\n\n{text}\n\nGive the pause in milliseconds "
+               "before typing each of its {n} characters, in order, the first 0. "
+               "Return only a JSON object {{\"gaps_ms\": [<integers>]}}.")
 
 
-def plan_prompt(essay_prompt: str) -> str:
-    return essay_prompt + JSON_INSTRUCTION
+def gaps_prompt(text: str) -> str:
+    return GAPS_PROMPT.format(text=text, n=len(text))
+
+
+def gaps_schema(n: int) -> dict:
+    return {"type": "object", "required": ["gaps_ms"],
+            "properties": {"gaps_ms": {"type": "array", "items": {"type": "integer", "minimum": 0},
+                                       "minItems": n, "maxItems": n}}}
 
 
 def attempt_seed(seed: int, attempt: int) -> int:
     return seed + 1000 * attempt
 
 
-def check_plan(raw: str) -> tuple[str, list[float]]:
-    """Parse and check one answer. Raises ValueError with the reason."""
+def check_plan(text: str, raw: str) -> tuple[str, list[float]]:
+    """Parse and check the gaps answer for the essay text. Raises ValueError with the reason."""
     try:
         d = json.loads(raw)
     except json.JSONDecodeError as e:
         raise ValueError(f"not JSON: {e}") from None
-    if not isinstance(d, dict) or not isinstance(d.get("text"), str) or not isinstance(d.get("gaps_ms"), list):
-        raise ValueError("not an object with a string text and a list gaps_ms")
-    text, gaps = d["text"], d["gaps_ms"]
+    if not isinstance(d, dict) or not isinstance(d.get("gaps_ms"), list):
+        raise ValueError("not an object with a list gaps_ms")
+    gaps = d["gaps_ms"]
     if len(gaps) != len(text):
         raise ValueError(f"len(gaps_ms) {len(gaps)} != len(text) {len(text)}")
     if not text:
@@ -88,34 +101,56 @@ def presses_of(text: str, gaps: list[float]) -> tuple[list[dict], int]:
     return events.make(times, keys), skipped
 
 
+def _call(generate, body: dict) -> dict:
+    """One call to ollama, as recorded. An HTTP error or a timeout (OSError) is kept as the record's error, so that it
+    fails the attempt and not the capture."""
+    t0 = time.perf_counter_ns()
+    try:
+        ans, err = generate(body), None
+    except OSError as e:
+        ans, err = {}, f"ollama: {type(e).__name__}: {e}"
+    return {"body": body, "response": ans.get("response", ""), "gen_ns": time.perf_counter_ns() - t0,
+            **({"error": err} if err else {}),
+            **{k: v for k, v in ans.items() if k not in ("response", "context")}}
+
+
 def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None, extra_options: dict | None = None) -> dict:
     """Ask for the plan up to MAX_ATTEMPTS times. generate(body) -> ollama's answer (injected in tests).
     extra_options (planning-only checks, never the production) are added to ollama's options."""
     if generate is None:
         from capture import ollama
-        generate = ollama.generate
+
+        def generate(body):
+            return ollama.generate(body, timeout=PLAN_TIMEOUT_S)
     from capture.ollama import TEMPERATURE
     if extra_options and set(extra_options) & {"temperature", "seed"}:
         raise ValueError("extra_options may not set temperature or seed (the conditions fix them)")
-    prompt = plan_prompt(essay_prompt)
     failures = []
     for a in range(MAX_ATTEMPTS):
-        body = {"model": model, "prompt": prompt, "format": "json", "keep_alive": "10m",
-                "options": {"temperature": TEMPERATURE, "seed": attempt_seed(seed, a), **(extra_options or {})}}
-        t0 = time.perf_counter_ns()
-        ans = generate(body)
-        raw = ans.get("response", "")
-        rec = {"type": "attempt", "attempt": a, "body": body, "response": raw, "gen_ns": time.perf_counter_ns() - t0,
-               **{k: v for k, v in ans.items() if k not in ("response", "context")}}
+        options = {"temperature": TEMPERATURE, "seed": attempt_seed(seed, a), **(extra_options or {})}
+        rec = {"type": "attempt", "attempt": a}
         try:
-            text, gaps = check_plan(raw)
+            rec["essay"] = _call(generate, {"model": model, "prompt": essay_prompt, "keep_alive": "10m",
+                                            "options": options})
+            if "error" in rec["essay"]:
+                raise ValueError(rec["essay"]["error"])
+            text = rec["essay"]["response"].strip()
+            if not text:
+                raise ValueError("empty essay")
+            rec["gaps"] = _call(generate, {"model": model, "prompt": gaps_prompt(text),
+                                           "format": gaps_schema(len(text)), "keep_alive": "10m", "options": options})
+            if "error" in rec["gaps"]:
+                raise ValueError(rec["gaps"]["error"])
+            text, gaps = check_plan(text, rec["gaps"]["response"])
             presses, skipped = presses_of(text, gaps)
             if not presses:  # a plan of untypable characters only types nothing: a failed attempt (review 2026-11-04)
                 raise ValueError(f"no typable character ({skipped} skipped)")
         except ValueError as e:
+            rec["gen_ns"] = sum(rec[k]["gen_ns"] for k in ("essay", "gaps") if k in rec)
             failures.append(str(e))
             llm_log.write(json.dumps({**rec, "ok": False, "reason": str(e)}) + "\n")
             continue
+        rec["gen_ns"] = rec["essay"]["gen_ns"] + rec["gaps"]["gen_ns"]
         llm_log.write(json.dumps({**rec, "ok": True}) + "\n")
         return {"ok": True, "attempts": a + 1, "failures": failures, "presses": presses, "skipped_chars": skipped}
     return {"ok": False, "attempts": MAX_ATTEMPTS, "failures": failures, "presses": [], "skipped_chars": 0}
@@ -127,9 +162,14 @@ def summarize_attempts(llm_ndjson: Path) -> list[dict]:
         r = json.loads(ln)
         if r.get("type") != "attempt":
             continue
-        out.append({"attempt": r["attempt"], "seed": r["body"]["options"]["seed"], "ok": r["ok"],
-                    "reason": r.get("reason"), "answer_chars": len(r["response"]), "done_reason": r.get("done_reason"),
-                    "eval_count": r.get("eval_count"), "seconds": round(r["gen_ns"] / 1e9, 1)})
+        e, g = r.get("essay") or {}, r.get("gaps")
+        out.append({"attempt": r["attempt"], "seed": e.get("body", {}).get("options", {}).get("seed"), "ok": r["ok"],
+                    "reason": r.get("reason"), "essay_chars": len(e.get("response", "")),
+                    "essay_done_reason": e.get("done_reason"), "essay_eval_count": e.get("eval_count"),
+                    "gaps_answer_chars": len(g["response"]) if g else None,
+                    "gaps_done_reason": g.get("done_reason") if g else None,
+                    "gaps_eval_count": g.get("eval_count") if g else None,
+                    "seconds": round(r["gen_ns"] / 1e9, 1)})
     return out
 
 
@@ -149,7 +189,7 @@ def main(argv=None, generate=None) -> int:
         with open(a.out / "llm.ndjson", "x", encoding="utf-8", newline="\n") as log:
             model = ollama.model_record(a.model) if generate is None else {"name": a.model}
             log.write(json.dumps({"type": "header", "model": model, "seed": a.seed, "extra_options": extra,
-                                  "prompt": plan_prompt(ollama.essay_prompt(task))}) + "\n")
+                                  "prompt": ollama.essay_prompt(task), "gaps_prompt": GAPS_PROMPT}) + "\n")
             res = make_plan(a.model, ollama.essay_prompt(task), a.seed, log, generate=generate, extra_options=extra)
     except BaseException:
         if generate is None:

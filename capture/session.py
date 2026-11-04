@@ -274,8 +274,8 @@ def main(argv=None) -> int:
         llm_log.write(json.dumps({"type": "header", "model": ollama.model_record(a.model), "ollama": ollama.version(),
                                   "temperature": ollama.TEMPERATURE, "seed": a.seed,
                                   "essay_prompt": ollama.essay_prompt(task),
-                                  "prompt": (llm_plan.plan_prompt(ollama.essay_prompt(task)) if a.llm_plan
-                                             else ollama.essay_prompt(task))}) + "\n")
+                                  "prompt": ollama.essay_prompt(task),
+                                  **({"gaps_prompt": llm_plan.GAPS_PROMPT} if a.llm_plan else {})}) + "\n")
         meta["ollama"] = ollama.version()
     if a.llm_plan:
         res = llm_plan.make_plan(a.model, ollama.essay_prompt(task), a.seed, llm_log)
