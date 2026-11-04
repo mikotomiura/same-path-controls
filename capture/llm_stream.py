@@ -144,10 +144,10 @@ class Typist(threading.Thread):
                     return
                 qlen = self.q.qsize()
                 planned = self.a1_ns + round(item["plan_ms"] * 1e6)
-                wait_until(planned)
+                stopped = wait_until(planned, self.stop_flag)  # a stop during a long wait ends it at once
                 if self.abort.is_set():
                     return
-                if self.stop_flag is not None and self.stop_flag.is_set():
+                if stopped or (self.stop_flag is not None and self.stop_flag.is_set()):
                     self.stopped_by_esc = True
                     return
                 if self.guard is not None and fg() != self.guard:

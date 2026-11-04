@@ -2,8 +2,10 @@
 
 Run as a child of the session:  python -m capture.hooklog --out hook.ndjson
 It prints 'READY <thread id>' once the hook is installed, 'ESC <ns>' when a non-injected Esc goes down (the stop
-flag of the injector) and 'END <ns>' on a non-injected Ctrl+Alt+End (the end signal of the live capture L0). The
-session stops it with PostThreadMessageW(thread id, WM_QUIT); the records are written then.
+flag of the injector) and 'END <ns>' on a non-injected Ctrl+Alt+End (the end signal of the live capture L0); both are
+printed by a thread of their own, never from the callback. The records are appended to the file in batches while the
+hook runs; the session stops it with PostThreadMessageW(thread id, WM_QUIT), and the last batch and the footer are
+written then.
 
 [仮] The spec asks for a dedicated thread; a dedicated process is used instead, so that the injector's waiting and the
 LLM reader of the session never hold the interpreter lock that the hook's callback needs (both use perf_counter_ns,
@@ -65,12 +67,16 @@ def layout_table(vk_scan) -> dict[tuple[int, bool], str]:
     return table
 
 
-def classify(raw: list[tuple], table: dict[tuple[int, bool], str]) -> list[dict]:
-    """Kinds and repeats of raw events in arrival order. raw: (t_ns, vk, scan, flags, down, extra).
-    Modifier state and repeats are followed through the events themselves."""
-    held: set[int] = set()
-    out = []
-    for t, vk, scan, flags, down, extra in raw:
+class Classifier:
+    """Kinds and repeats of raw events, one event at a time in arrival order (the writer thread classifies each batch
+    as it is written). Modifier state and repeats are followed through the events themselves."""
+
+    def __init__(self, table: dict[tuple[int, bool], str]):
+        self.table = table
+        self.held: set[int] = set()
+
+    def one(self, t, vk, scan, flags, down, extra) -> dict:
+        held = self.held
         repeat = bool(down and vk in held and vk != VK_PACKET)
         shift = bool(held & SHIFT)
         ctrl_alt = bool(held & (CTRL | ALT))
@@ -90,7 +96,7 @@ def classify(raw: list[tuple], table: dict[tuple[int, bool], str]) -> list[dict]
         elif vk in NUMPAD:
             kind = events.kind_of_char(NUMPAD[vk])
         else:
-            c = table.get((vk, shift))
+            c = self.table.get((vk, shift))
             kind = events.kind_of_char(c) if c is not None else "nonchar"
         if down:
             held.add(vk)
@@ -102,8 +108,13 @@ def classify(raw: list[tuple], table: dict[tuple[int, bool], str]) -> list[dict]
             rec["vk"] = vk
         if vk == VK_PACKET:
             rec["packet"] = True
-        out.append(rec)
-    return out
+        return rec
+
+
+def classify(raw: list[tuple], table: dict[tuple[int, bool], str]) -> list[dict]:
+    """Kinds and repeats of raw events in arrival order. raw: (t_ns, vk, scan, flags, down, extra)."""
+    c = Classifier(table)
+    return [c.one(*r) for r in raw]
 
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -111,7 +122,20 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
                 ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
 
 
+# Records are appended to hook.ndjson in batches by a writer thread, never from the hook's callback (the callback only
+# stores the raw event and, for Esc and the end chord, sets a flag): a crash loses at most the last batch, and the
+# callback does no I/O (Mac review of 2026-11-04). The writer wakes every WRITE_EVERY_S and writes what has come; it
+# holds the interpreter lock only for the short time a batch takes to be classified and written.
+WRITE_EVERY_S = 0.5
+# The hook process's interpreter switch interval: a callback waiting for the lock while the writer holds it waits at
+# most about this long (Python's default is 5 ms). Compared with the P 18 ms smoke (session notes v3).
+SWITCH_INTERVAL_S = 0.0005
+
+
 def run(out: Path) -> int:
+    import collections
+    import threading
+    sys.setswitchinterval(SWITCH_INTERVAL_S)
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     LRESULT = ctypes.c_ssize_t
@@ -126,10 +150,14 @@ def run(out: Path) -> int:
     user32.GetKeyboardLayout.restype = ctypes.c_void_p
     kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 
-    raw: list[tuple] = []
+    raw: collections.deque = collections.deque()   # append and popleft are atomic: no lock in the callback
     append = raw.append
     perf = time.perf_counter_ns
     held: set[int] = set()
+    n_raw = [0]
+    esc_at: list[int] = []
+    end_at: list[int] = []
+    signal = threading.Event()
 
     def proc(code, wparam, lparam):
         if code == 0:
@@ -138,20 +166,59 @@ def run(out: Path) -> int:
             down = wparam in (WM_KEYDOWN, WM_SYSKEYDOWN)
             vk, flags = k.vkCode, k.flags
             append((t, vk, k.scanCode, flags, down, k.dwExtraInfo))
+            n_raw[0] += 1
             if down:
                 held.add(vk)
                 if not flags & LLKHF_INJECTED:
                     if vk == VK_ESCAPE:
-                        print(f"ESC {t}", flush=True)
+                        esc_at.append(t)
+                        signal.set()
                     elif vk == VK_END and held & CTRL and held & ALT:
-                        print(f"END {t}", flush=True)
+                        end_at.append(t)
+                        signal.set()
             else:
                 held.discard(vk)
         return user32.CallNextHookEx(None, code, wparam, lparam)
 
+    def reporter():  # prints Esc and the end chord for the session, outside the callback
+        sent_esc = sent_end = 0
+        while True:
+            signal.wait()
+            signal.clear()
+            while sent_esc < len(esc_at):
+                print(f"ESC {esc_at[sent_esc]}", flush=True)
+                sent_esc += 1
+            while sent_end < len(end_at):
+                print(f"END {end_at[sent_end]}", flush=True)
+                sent_end += 1
+
     cb = HOOKPROC(proc)
     start = {"type": "header", "pid": __import__("os").getpid(), "time_ns": time.time_ns(), "perf_ns": perf(),
-             "keyboard_layout": hex(user32.GetKeyboardLayout(0) or 0)}
+             "keyboard_layout": hex(user32.GetKeyboardLayout(0) or 0), "write_every_s": WRITE_EVERY_S,
+             "switch_interval_s": sys.getswitchinterval()}
+    f = open(out, "x", encoding="utf-8", newline="\n")
+    f.write(json.dumps(start) + "\n")
+    f.flush()
+    classifier = Classifier(layout_table(user32.VkKeyScanW))
+    written = [0]
+    stop_writer = threading.Event()
+
+    def drain():
+        lines = []
+        while raw:
+            lines.append(json.dumps(classifier.one(*raw.popleft())))
+        if lines:
+            f.write("\n".join(lines) + "\n")
+            f.flush()
+            written[0] += len(lines)
+
+    def writer():
+        while not stop_writer.wait(WRITE_EVERY_S):
+            drain()
+
+    threading.Thread(target=reporter, daemon=True).start()
+    wt = threading.Thread(target=writer, daemon=True)
+    wt.start()
     hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, cb, kernel32.GetModuleHandleW(None), 0)
     if not hook:
         print(f"FAIL SetWindowsHookExW {ctypes.get_last_error()}", flush=True)
@@ -162,13 +229,13 @@ def run(out: Path) -> int:
         user32.TranslateMessage(ctypes.byref(msg))
         user32.DispatchMessageW(ctypes.byref(msg))
     user32.UnhookWindowsHookEx(hook)
-    stop = {"type": "footer", "time_ns": time.time_ns(), "perf_ns": perf(), "n_raw": len(raw)}
-    recs = classify(raw, layout_table(user32.VkKeyScanW))
-    with open(out, "x", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(start) + "\n")
-        for r in recs:
-            f.write(json.dumps(r) + "\n")
-        f.write(json.dumps(stop) + "\n")
+    stop_writer.set()
+    wt.join()
+    drain()
+    stop = {"type": "footer", "time_ns": time.time_ns(), "perf_ns": perf(), "n_raw": n_raw[0],
+            "n_written": written[0]}
+    f.write(json.dumps(stop) + "\n")
+    f.close()
     print("DONE", flush=True)
     return 0
 

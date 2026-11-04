@@ -43,6 +43,13 @@ from capture import events, hooklog, summary  # noqa: E402
 PY = sys.executable
 INTERRUPTED = 3
 COUNTDOWN_S = 3
+# The session's interpreter switch interval (sys.setswitchinterval), set before anything is typed. In M1 the typist
+# thread waits for the interpreter lock while the stream reader holds it; Python's default lets it wait up to 5 ms.
+# Compared on the work PC (M1 smoke, qwen2.5:3b, two captures each, 2026-11-04, session notes v3): the wait of presses
+# that were not queued behind an earlier send (queue length 0) had a median of 0.007 ms and a 95th percentile of
+# 0.06-0.08 ms with both 5 ms and 0.5 ms, and the longer waits came from the queue (plan collisions), not from the
+# lock. 0.5 ms gave no smaller wait, so Python's default (5 ms) is kept, and written to meta.json.
+SWITCH_INTERVAL_MS = 5.0
 AFTER_S = 1.0
 
 
@@ -211,6 +218,7 @@ def parse(argv=None) -> argparse.Namespace:
     ap.add_argument("--auto-focus", action="store_true")  # the start used in production (researcher, 2026-11-04)
     ap.add_argument("--no-mouse-guard", action="store_true")
     ap.add_argument("--ready-timeout", type=float, default=300.0)
+    ap.add_argument("--switch-interval-ms", type=float, default=SWITCH_INTERVAL_MS)
     a = ap.parse_args(argv)
     if (a.llm_stream or a.llm_plan) and not (a.model and a.prompt_file and a.seed is not None):
         ap.error("--llm-stream and --llm-plan need --model, --prompt-file and --seed")
@@ -227,15 +235,17 @@ def main(argv=None) -> int:
         raise SystemExit("the capture runs on Windows only")
     from capture import browser as br
     from capture import inject, llm_plan, llm_stream, ollama
+    from capture.stop import StopSignal
 
     out: Path = a.out
     out.mkdir(parents=True, exist_ok=False)  # never over an earlier capture
+    sys.setswitchinterval(a.switch_interval_ms / 1000.0)
     mode = "live" if a.live else "llm_stream" if a.llm_stream else "llm_plan" if a.llm_plan else "events"
     meta: dict = {"mode": mode, "command": [PY, "-m", "capture.session", *(argv if argv is not None else sys.argv[1:])],
                   "start_utc": now_utc(), "machine": machine(), **git_state(), "status": "running",
                   "injection": None if a.live else {"method": a.inject, "named_keys": "virtual keys (VK_RETURN, "
                                                     "VK_BACK, VK_DELETE)", "one_press": "down and up in one SendInput"},
-                  "hook_installed": not a.no_hook, "load": {"model": a.load} if a.load else None,
+                  "switch_interval_s": sys.getswitchinterval(), "hook_installed": not a.no_hook, "load": {"model": a.load} if a.load else None,
                   "restarts": {"browser": "started fresh for this capture (new temporary profile)",
                                "page": None, "ollama": None, "machine_boot_utc": None}}
     meta["restarts"]["machine_boot_utc"] = meta["machine"]["boot_time_utc"]
@@ -300,10 +310,19 @@ def main(argv=None) -> int:
         srv = Child(["capture.serve", "--out", str(out / "page.ndjson")], "server")
         kids.append(srv)
         page = Page(int(srv.first.split()[1]))
-        b = br.Browser(a.browser, page.base + "/")
-        meta["browser"] = {"name": a.browser, "version": b.version, "exe": str(b.exe), "args": b.args()[1:]}
+        stale = br.remove_stale_profiles()  # an earlier capture's profile is deleted before this one starts
+        if stale["failed"]:
+            raise RuntimeError(f"an earlier capture's browser profile could not be deleted: {stale['failed']}")
+        b = br.Browser(a.browser, page.base + "/", incognito=a.live)
+        meta["browser"] = {"name": a.browser, "version": b.version, "exe": str(b.exe), "args": b.args()[1:],
+                           "stale_profiles_deleted": stale["deleted"]}
         hwnd = b.start()
-        page.wait("open", 1, 30)
+        opened = page.wait("open", 1, 30)["last"]["open"]
+        # the GPU that draws the page (WebGL's unmasked renderer, as chrome://gpu shows it): the display is on the
+        # integrated Intel GPU and the LLM on the RTX; recorded per capture so that a change is seen afterwards
+        meta["browser"]["gl_renderer"] = opened.get("gl_renderer")
+        meta["browser"]["gl_vendor"] = opened.get("gl_vendor")
+        meta["browser"]["user_agent"] = opened.get("user_agent")
         if not a.no_hook:
             hook = Hook(out / "hook.ndjson")
         if a.auto_focus:
@@ -337,7 +356,11 @@ def main(argv=None) -> int:
             time.sleep(1.0)
         if a.live:  # L0: the page records from the signal, as the hook layer is read from it (review of 2026-11-04)
             arm()
-        stop = hook.esc if hook else None
+        # Esc seen by the hook, or 'python -m capture.stop' from another console (the only way with --no-hook)
+        stop = stopper = StopSignal(hook.esc if hook else None)
+        if not a.live:
+            print("To stop: Esc" + (" (not seen without the hook)" if hook is None else "")
+                  + ", or 'uv run python -m capture.stop' in another console.", flush=True)
         meta["typing_start_utc"] = now_utc()
         meta["typing_start_perf_ns"] = time.perf_counter_ns()
         interrupted = None
@@ -372,15 +395,20 @@ def main(argv=None) -> int:
                     summ["attempted"] < summ["planned"]:
                 interrupted = summ
         meta["typing_end_perf_ns"] = time.perf_counter_ns()
+        meta["stopped_by"] = stopper.by
+        stopper.close()
         meta["typing_end_utc"] = now_utc()
         if guard is not None:
             guard.stop()
             meta["mouse_guard"]["swallowed"] = guard.swallowed
             guard = None
         time.sleep(AFTER_S)
-        n_log = page.state()["counts"]["log"]
+        n_flushed = page.state()["counts"]["flushed"]
         page.cmd("flush")
-        page.wait("log", n_log + 1, 30)
+        fl = page.wait("flushed", n_flushed + 1, 60)["last"]["flushed"]
+        # what the page sent against what the server wrote (acknowledged batches; a difference interrupts)
+        meta["page_log"] = {k: fl.get(k) for k in ("sent", "saved", "n_batches", "batches_failed", "batches_resent",
+                                                   "duplicates_dropped")}
         meta["page_opens"] = page.state()["counts"]["open"]
         meta["restarts"]["page"] = "reloaded during the capture" if meta["page_opens"] > 1 else "not reloaded"
         if hook is not None:  # the hook writes hook.ndjson only when it stops: stopped here, before the checks read it

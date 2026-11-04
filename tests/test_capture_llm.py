@@ -183,7 +183,7 @@ def run_m1(monkeypatch, lines, sent=None, wait_s=0.0):
         def __exit__(self, *a):
             return False
     fake.Injector = Inj
-    fake.wait_until = lambda t: time.sleep(wait_s)
+    fake.wait_until = lambda t, stop=None: time.sleep(wait_s) or False
     monkeypatch.setitem(sys.modules, "capture.inject", fake)
     from capture import ollama
     monkeypatch.setattr(ollama, "open_stream", lambda body: FakeStream([json.dumps(x).encode() for x in lines]))

@@ -133,19 +133,31 @@ class Injector:
         return False
 
 
-def wait_until(target_ns: int) -> None:
+# The longest single sleep of a wait: a stop (Esc, or capture.stop) asked during a long wait (L1's or H1's rests of
+# several seconds) is seen within this time, and the next press is not sent (Mac review of 2026-11-04).
+STOP_POLL_NS = 20_000_000
+
+
+def wait_until(target_ns: int, stop=None) -> bool:
+    """Wait for target_ns (sleep until 2 ms remain, then spin). Returns True when stop (an object with is_set()) was
+    set during the wait; the caller then sends nothing. The stop is asked at least every STOP_POLL_NS while sleeping
+    and once more at the end; never inside the last 2 ms spin, so that the spin stays as it was."""
     while True:
         left = target_ns - time.perf_counter_ns()
         if left <= SPIN_NS:
             break
-        time.sleep((left - SPIN_NS) / 1e9)
+        if stop is not None and stop.is_set():
+            return True
+        time.sleep(min(left - SPIN_NS, STOP_POLL_NS) / 1e9)
     while time.perf_counter_ns() < target_ns:
         time.sleep(0)
+    return stop is not None and stop.is_set()
 
 
 def type_schedule(presses: list[dict], method: str, stop=None, t0_ns: int | None = None,
                   guard_hwnd: int | None = None) -> tuple[list[dict], dict]:
-    """Type the presses at T0 + t_ms. stop: an object with is_set() (the hook's Esc), checked before each press.
+    """Type the presses at T0 + t_ms. stop: an object with is_set() (the hook's Esc or capture.stop), checked before
+    each press, during each wait and again just before each press is sent.
     guard_hwnd: the page's window; before each press the foreground window must be it, otherwise typing stops at once
     and the capture is interrupted (redone once by the runlist: the researcher, 2026-11-04)
     (a press must never reach another window: in the first probe on the work PC, with the IME turned on, the presses
@@ -166,7 +178,9 @@ def type_schedule(presses: list[dict], method: str, stop=None, t0_ns: int | None
                 stopped = True
                 break
             planned = T0 + round(p["t_ms"] * 1e6)
-            wait_until(planned)
+            if wait_until(planned, stop):  # a stop during the wait: this press is not sent (checked just before it)
+                stopped = True
+                break
             if guard_hwnd is not None and fg() != guard_hwnd:
                 focus_lost = True
                 break

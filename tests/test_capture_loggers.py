@@ -234,7 +234,12 @@ def test_problems_after_a_capture(tmp_path):
     assert probs("load_ok", meta=ld, load=[start(0, -50), gen(0, -50, 120), start(1, 121)]) == {}
     long_ = {**ld, "typing_end_perf_ns": int(3000e6)}
     assert probs("load_gap", meta=long_, load=[start(0, -50), gen(0, -50, 100)])["load_uncovered_ms"] == 2900.0
-    assert probs("load_short_gap", meta=long_, load=[start(0, -50), gen(0, -50, 100), start(1, 900)]) == {}
+    # a generation still running at the end, its tokens written as progress lines up to the end (capture/load.py)
+    prog = {"type": "progress", "n": 1, "last_token_perf_ns": int(2990e6), "tokens": 50}
+    assert probs("load_short_gap", meta=long_, load=[start(0, -50), gen(0, -50, 100), start(1, 900), prog]) == {}
+    # the same with no token after its start: stalled, not covering the typing (Mac review of 2026-11-04)
+    assert probs("load_running_no_token", meta=long_,
+                 load=[start(0, -50), gen(0, -50, 100), start(1, 900)])["load_uncovered_ms"] == 2900.0
     assert probs("load_none", meta=ld, load=None) == {"load_recorded_nothing": True}
     err = {"type": "error", "n": 1, "perf_ns": 0, "error": "X: y"}
     assert probs("load_err", meta=ld, load=[start(0, -50), gen(0, -50, 400), err])["load_errors"] == ["X: y"]

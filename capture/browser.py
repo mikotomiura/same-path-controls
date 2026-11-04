@@ -102,20 +102,53 @@ def ime_close(hwnd: int) -> tuple[int, int]:
     return before, after
 
 
+PROFILE_PREFIX = "v7-capture-profile-"
+# No name outside the machine is resolved: the page (127.0.0.1) opens and every other host name fails (Mac review of
+# 2026-11-04; checked on the work PC, session notes v3). A literal IP address other than 127.0.0.1 is not covered by
+# this rule; the background services that would reach out are turned off by the flags below.
+HOST_RULES = "MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"
+OFFLINE_FLAGS = [f"--host-resolver-rules={HOST_RULES}", "--disable-background-networking",
+                 "--disable-component-update", "--disable-domain-reliability", "--no-pings"]
+
+
+def stale_profiles(tmp: Path | None = None) -> list[Path]:
+    """Temporary profiles left by an earlier capture (a capture that crashed before deleting its profile)."""
+    tmp = Path(tempfile.gettempdir()) if tmp is None else Path(tmp)
+    return sorted(p for p in tmp.glob(PROFILE_PREFIX + "*") if p.is_dir())
+
+
+def remove_stale_profiles(tmp: Path | None = None) -> dict:
+    """Delete the profiles of earlier captures before a new one starts (their typed text must not stay on disk, and
+    no capture may start from a used profile). Returns what was found and deleted, for meta.json."""
+    found = stale_profiles(tmp)
+    deleted, failed = [], []
+    for p in found:
+        try:
+            shutil.rmtree(p)
+            deleted.append(str(p))
+        except OSError as e:
+            failed.append(f"{p}: {e}")
+    return {"found": len(found), "deleted": deleted, "failed": failed}
+
+
 class Browser:
-    def __init__(self, name: str, url: str):
+    def __init__(self, name: str, url: str, incognito: bool = False):
         if name not in EXE:
             raise ValueError(f"browser must be one of {sorted(EXE)}")
-        self.name, self.url = name, url
+        self.name, self.url, self.incognito = name, url, incognito
         self.exe = EXE[name]
         self.version = file_version(self.exe)
-        self.profile = Path(tempfile.mkdtemp(prefix="v7-capture-profile-"))
+        self.profile = Path(tempfile.mkdtemp(prefix=PROFILE_PREFIX))
         self.proc: subprocess.Popen | None = None
         self.started_ns: int | None = None
 
     def args(self) -> list[str]:
-        return [str(self.exe), f"--user-data-dir={self.profile}", "--no-first-run", "--no-default-browser-check",
-                "--disable-extensions", "--disable-sync", "--disable-translate", "--new-window", self.url]
+        """--app opens the page in a window with no address bar and no tabs, so that no press can reach an address
+        bar (Mac review of 2026-11-04). --incognito in the live capture (L0). The list is written to meta.json as
+        it is passed."""
+        return ([str(self.exe), f"--user-data-dir={self.profile}", "--no-first-run", "--no-default-browser-check",
+                 "--disable-extensions", "--disable-sync", "--disable-translate", *OFFLINE_FLAGS]
+                + (["--incognito"] if self.incognito else []) + [f"--app={self.url}"])
 
     def start(self, timeout_s: float = 20.0) -> int:
         self.started_ns = time.time_ns()

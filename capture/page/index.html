@@ -89,8 +89,42 @@ async function handle(cmd) {
     log = [];
     ta.value = "";
     msg.textContent = "Done.";
-    await post("/log", {entries: entries, ...clocks()});
+    await sendLog(entries);
   }
+}
+
+// The log is sent in numbered batches; a batch is sent again until the server acknowledges that it wrote it (the
+// server drops a batch it already wrote). Then the page reports how many entries it sent, and the session compares
+// that with what the server wrote (Mac review of 2026-11-04).
+const BATCH = 500;
+const TRIES = 20;
+let flushId = 0;
+
+async function sendBatch(body) {
+  for (let t = 0; t < TRIES; t++) {
+    try {
+      const r = await post("/log", body);
+      if (r.ok) {
+        const a = await r.json();
+        if (a.saved === body.batch) return t;
+      }
+    } catch (err) { /* sent again below */ }
+    await new Promise((ok) => setTimeout(ok, 250));
+  }
+  return -1;
+}
+
+async function sendLog(entries) {
+  flushId += 1;
+  const nb = Math.ceil(entries.length / BATCH);
+  let failed = 0, resent = 0;
+  for (let b = 0; b < nb; b++) {
+    const t = await sendBatch({flush: flushId, batch: b, n_batches: nb,
+                               entries: entries.slice(b * BATCH, (b + 1) * BATCH), ...clocks()});
+    if (t < 0) failed += 1; else resent += t;
+  }
+  await post("/flushed", {flush: flushId, n_batches: nb, sent: entries.length, batches_failed: failed,
+                          batches_resent: resent, ...clocks()});
 }
 
 async function loop() {
@@ -106,10 +140,28 @@ async function loop() {
   }
 }
 
+// The GPU that draws the page (as chrome://gpu reports it), read once when the page opens; the context is released.
+function glRenderer() {
+  try {
+    const gl = document.createElement("canvas").getContext("webgl");
+    if (!gl) return {gl_renderer: null, gl_vendor: null};
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    const out = ext ? {gl_renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL),
+                       gl_vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)}
+                    : {gl_renderer: gl.getParameter(gl.RENDERER), gl_vendor: gl.getParameter(gl.VENDOR)};
+    const lose = gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+    return out;
+  } catch (err) {
+    return {gl_renderer: null, gl_vendor: null, gl_error: String(err)};
+  }
+}
+
 window.addEventListener("load", () => {
   ta.value = "";
   ta.focus();
-  post("/open", {user_agent: navigator.userAgent, cross_origin_isolated: self.crossOriginIsolated, ...clocks()});
+  post("/open", {user_agent: navigator.userAgent, cross_origin_isolated: self.crossOriginIsolated, ...glRenderer(),
+                 ...clocks()});
   loop();
 });
 </script>

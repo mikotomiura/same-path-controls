@@ -21,6 +21,16 @@ if __package__ in (None, ""):
 
 from capture import ollama  # noqa: E402
 
+# A generation whose next token does not come within STALL_MS has stopped generating (Mac review of 2026-11-04): the
+# gap is written as a 'stall' line and is not counted as covering the typing (summary.covered_spans). A technical
+# value, not in the conditions: normal gaps between tokens are tens of ms (the 14B model on this PC, about 20-30
+# tokens/s; the prompt's first token after a fraction of a second), so 500 ms is ten times a normal gap and still
+# short against the 1000 ms of uncovered typing a load capture may have (summary.LOAD_UNCOVERED_MAX_MS).
+STALL_MS = 500.0
+# A running generation writes its latest token time this often, so that a generation stalled at the end of the typing
+# (no token after it, hence no stall line yet) is seen by the session's check.
+PROGRESS_S = 0.25
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -40,26 +50,39 @@ def main() -> int:
     def loop():
         n = 0
         try:
+            stall_ns = round(STALL_MS * 1e6)
             while not stop.is_set():
                 t0 = time.perf_counter_ns()
                 tokens, done = 0, False
                 # the start is written at once, so that a generation still running is seen by the session's check
                 f.write(json.dumps({"type": "start", "n": n, "start_perf_ns": t0}) + "\n")
                 f.flush()
+                prev = t0            # the request's start, then each token's arrival
+                last_progress = t0
                 with ollama.open_stream({"model": a.model, "prompt": prompt, "keep_alive": "10m",
                                      "options": {"temperature": ollama.TEMPERATURE, "seed": n}}) as r:
                     for line in r:
+                        t = time.perf_counter_ns()
                         if stop.is_set():
                             break
                         d = json.loads(line)
                         if "error" in d:
                             raise RuntimeError(f"ollama: {d['error']}")
+                        if t - prev > stall_ns:  # no token for longer than STALL_MS: not generating in that gap
+                            f.write(json.dumps({"type": "stall", "n": n, "from_perf_ns": prev, "to_perf_ns": t}) + "\n")
+                            f.flush()
+                        prev = t
                         if d.get("response"):
                             tokens += 1
                             first.set()
                         if d.get("done"):
                             done = True
                             break
+                        if t - last_progress > PROGRESS_S * 1e9:
+                            f.write(json.dumps({"type": "progress", "n": n, "last_token_perf_ns": t,
+                                                "tokens": tokens}) + "\n")
+                            f.flush()
+                            last_progress = t
                 f.write(json.dumps({"type": "generation", "n": n, "start_perf_ns": t0,
                                     "end_perf_ns": time.perf_counter_ns(), "tokens": tokens, "completed": done}) + "\n")
                 f.flush()

@@ -28,23 +28,42 @@ class State:
         self.f = open(out, "x", encoding="utf-8", newline="\n")
         self.lock = threading.Lock()
         self.cmds: queue.Queue[str] = queue.Queue()
-        self.counts = {m: 0 for m in PAGE_MESSAGES}
+        self.counts = {m: 0 for m in PAGE_MESSAGES + ("flushed",)}
         self.last: dict[str, dict] = {}
+        # The page's log arrives in numbered batches (flush id, batch number). A batch is acknowledged only once it is
+        # written and flushed to the file; a batch sent again (its acknowledgement lost) is dropped here (Mac review of
+        # 2026-11-04).
+        self.batches_saved: set[tuple] = set()
+        self.saved_entries: dict = {}   # flush id -> entries written
+        self.duplicates: dict = {}      # flush id -> batches dropped as sent again
 
-    def keep(self, what: str, body: dict) -> None:
+    def keep(self, what: str, body: dict) -> dict:
+        """Write one page message. Returns the acknowledgement sent back to the page."""
         stamp = {"server_time_ns": time.time_ns(), "server_perf_ns": time.perf_counter_ns()}
         with self.lock:
-            self.counts[what] += 1
             if what == "log":
                 entries = body.pop("entries")
+                fid, batch = body.get("flush"), body.get("batch")
+                if batch is not None and (fid, batch) in self.batches_saved:
+                    self.duplicates[fid] = self.duplicates.get(fid, 0) + 1
+                    return {"saved": batch, "duplicate": True}
                 self.f.write(json.dumps({"type": "log", **body, **stamp, "n": len(entries)}) + "\n")
                 for e in entries:
                     self.f.write(json.dumps({"type": "key", **e}) + "\n")
+                self.f.flush()
+                self.batches_saved.add((fid, batch))
+                self.saved_entries[fid] = self.saved_entries.get(fid, 0) + len(entries)
                 body = {**body, "n": len(entries)}
+            elif what == "flushed":  # the page's count of what it sent: kept in the state only, read by the session
+                fid = body.get("flush")
+                body = {**body, "saved": self.saved_entries.get(fid, 0),
+                        "duplicates_dropped": self.duplicates.get(fid, 0)}
             else:
                 self.f.write(json.dumps({"type": what, **body, **stamp}) + "\n")
-            self.f.flush()
+                self.f.flush()
+            self.counts[what] += 1
             self.last[what] = {**body, **stamp}
+            return {"saved": body.get("batch")} if what == "log" else {}
 
 
 def handler(state: State):
@@ -84,8 +103,9 @@ def handler(state: State):
             what = self.path.strip("/")
             if what == "control":
                 state.cmds.put(body["cmd"])
-            elif what in PAGE_MESSAGES:
-                state.keep(what, body)
+            elif what in PAGE_MESSAGES or what == "flushed":
+                self.send(200, json.dumps(state.keep(what, body)).encode())
+                return
             else:
                 self.send(404, b"{}")
                 return

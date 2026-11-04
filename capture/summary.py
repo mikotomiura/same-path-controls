@@ -90,6 +90,42 @@ def uncovered_ms(t0: int, t1: int, spans: list[tuple[int, int]]) -> float:
     return (t1 - t0 - covered) / 1e6
 
 
+def covered_spans(load: list[dict], t1: int, stall_ns: int) -> list[tuple[int, int]]:
+    """The times (ns) when a background generation was generating: each generation from its start to its end (a
+    running one: to t1), less its stalls (gaps of no token longer than load.STALL_MS, written by the load). A running
+    generation whose latest token (its progress lines) is more than stall_ns before t1 is counted only up to that token:
+    it stalled at the end (Mac review of 2026-11-04). A load that failed covers nothing after its error."""
+    gens = {r["n"]: (r["start_perf_ns"], r["end_perf_ns"]) for r in load if r.get("type") == "generation"}
+    failed = any(r.get("type") == "error" for r in load)
+    last_tok: dict = {}
+    for r in load:
+        if r.get("type") in ("progress",):
+            last_tok[r["n"]] = max(last_tok.get(r["n"], 0), r["last_token_perf_ns"])
+        elif r.get("type") == "stall":
+            last_tok[r["n"]] = max(last_tok.get(r["n"], 0), r["to_perf_ns"])
+    for r in load:
+        if r.get("type") == "start" and r["n"] not in gens and not failed:
+            end = t1
+            lt = max(last_tok.get(r["n"], r["start_perf_ns"]), r["start_perf_ns"])
+            if t1 - lt > stall_ns:
+                end = lt
+            gens[r["n"]] = (r["start_perf_ns"], end)
+    stalls: dict = {}
+    for r in load:
+        if r.get("type") == "stall":
+            stalls.setdefault(r["n"], []).append((r["from_perf_ns"], r["to_perf_ns"]))
+    out = []
+    for n, (a, b) in gens.items():
+        cur = a
+        for s0, s1 in sorted(stalls.get(n, [])):
+            if s0 > cur:
+                out.append((cur, min(s0, b)))
+            cur = max(cur, s1)
+        if b > cur:
+            out.append((cur, b))
+    return out
+
+
 # The longest typing time without a background generation that a load capture may have (restarts take a request to
 # ollama, a few ms to a few hundred ms). Not in the conditions or the spec: a technical bound (review of 2026-11-04).
 LOAD_UNCOVERED_MAX_MS = 1000.0
@@ -108,6 +144,10 @@ def problems(s: dict, meta: dict) -> dict:
     n_page = (s.get("page") or {}).get("n", 0)
     if n_page == 0 and (planned or meta.get("mode") == "live"):
         out["page_recorded_nothing"] = True
+    pl = meta.get("page_log")
+    if pl is not None and (pl.get("sent") != pl.get("saved") or pl.get("batches_failed")):
+        out["page_log_not_all_saved"] = {"sent": pl.get("sent"), "saved": pl.get("saved"),
+                                         "batches_failed": pl.get("batches_failed")}
     if meta.get("page_opens", 1) > 1:
         out["page_reloaded"] = meta["page_opens"]
     if (s.get("page") or {}).get("not_in_box", 0) > 0:
@@ -194,11 +234,14 @@ def summarize(out: Path) -> dict:
             # an error at or before the typing's end failed the load while it mattered; a later one is only reported
             s["load"]["errors_during_typing"] = [r["error"] for r in load
                                                  if r.get("type") == "error" and r["perf_ns"] <= t1]
-            ended = {r["n"] for r in gens}
-            running = [(r["start_perf_ns"], t1) for r in load if r.get("type") == "start" and r["n"] not in ended
-                       and not s["load"]["errors"]]  # a generation started and not ended yet runs past t1
-            s["load"]["uncovered_ms"] = uncovered_ms(
-                t0, t1, [(r["start_perf_ns"], r["end_perf_ns"]) for r in gens] + running)
+            from capture.load import STALL_MS
+            stall_ns = round(STALL_MS * 1e6)
+            st = [(max(r["from_perf_ns"], t0), min(r["to_perf_ns"], t1)) for r in load if r.get("type") == "stall"]
+            st = [(a, b) for a, b in st if b > a]
+            s["load"]["stalls_during_typing"] = {"n": len(st), "ms": sum(b - a for a, b in st) / 1e6,
+                                                 "threshold_ms": STALL_MS}
+            # typing time with no generation generating: restarts, stalls, a generation stalled at the end
+            s["load"]["uncovered_ms"] = uncovered_ms(t0, t1, covered_spans(load, t1, stall_ns))
     for k in ("llm_stream", "llm_plan"):
         if k in meta:
             s[k] = meta[k]
