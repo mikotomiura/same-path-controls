@@ -45,7 +45,8 @@ import prototype_v7 as v7  # noqa: E402
 COND = ROOT / "works" / "conditions" / "prototype_v7.json"
 COND_V6 = ROOT / "works" / "conditions" / "prototype_v6.json"
 OUT_DIR = ROOT / "results" / "prototype_v7"
-CODE = ["works/prototype_v7_run.py", "works/prototype_v7.py", "works/prototype_v6.py", "works/prototype_v5.py",
+CODE = ["works/prototype_v7_run.py", "works/prototype_v7_plan.py", "capture/runlist.py", "capture/events.py",
+        "works/prototype_v7.py", "works/prototype_v6.py", "works/prototype_v5.py",
         "works/prototype_v4.py", "works/_common.py", "src/keystroke.py", "uv.lock"]
 S = v7.SEED
 
@@ -344,6 +345,30 @@ def read_runlog(path: Path) -> dict[str, str]:
     return out
 
 
+N_RUN_BLOCKS = 7   # run_order (amendment B16): block 0 (L0) and blocks 1-6
+
+
+def read_runlogs(root: Path) -> dict[str, str]:
+    """One runlog.ndjson (every block in one run), or runlog.b0.ndjson to runlog.b6.ndjson (one run per block, capture
+    runlist --block; amendment B16), never both; an item appears once over all of them."""
+    blocks = sorted(root.glob("runlog.b*.ndjson"))
+    single = root / "runlog.ndjson"
+    if not blocks:
+        return read_runlog(single)
+    if single.exists():
+        raise RunStop(f"{root} holds runlog.ndjson and per-block runlogs: one of them is not of this run")
+    want = [root / f"runlog.b{b}.ndjson" for b in range(N_RUN_BLOCKS)]
+    if blocks != want:
+        raise RunStop(f"the per-block runlogs are not blocks 0-{N_RUN_BLOCKS - 1}: {[b.name for b in blocks]}")
+    out: dict[str, str] = {}
+    for f in want:
+        for item, res in read_runlog(f).items():
+            if item in out:
+                raise RunStop(f"runlog: {item} appears in two blocks")
+            out[item] = res
+    return out
+
+
 # ---------------------------------------------------------------- captures
 
 
@@ -420,7 +445,7 @@ def load_capture(root: Path, runlog: dict[str, str], series: str, unit: int, *, 
 
 def load_all(root: Path) -> dict[str, list[Capture]]:
     """Every capture of series.counts_of_captures, by series in unit order."""
-    runlog = read_runlog(root / "runlog.ndjson")
+    runlog = read_runlogs(root)
     units = {"H1_idle": range(N_H), "H1_load": range(N_H), "H1_rep": range(N_REP), "L0": range(N_ESSAYS),
              "L1_idle": range(N_ESSAYS), "L1_load": range(N_ESSAYS), **{s_: range(N_TEXTS) for s_ in MACHINE},
              "P_idle": [int(c) for c in CONTROLS_MS], "P_load": [int(c) for c in CONTROLS_MS],

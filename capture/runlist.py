@@ -1,13 +1,25 @@
 """Run several captures in a random order (capture spec section 6, conditions run_order).
 
-    python -m capture.runlist --list <runs.json> --key 20261031 7 6 --out <dir>
+    python -m capture.runlist --list <runs.json> --key 20261031 7 6 --out <dir> [--block <b>]
 
 runs.json: [{"name": "<series>/<unit>", "args": [session arguments without --out], "after": <name or null>,
-"block": <day>, "person": <replay person's unit, H1_idle and H1_load only>, "role": "idle" | "load"}, ...]
+"block": <day>, "person": <replay person's unit, H1_idle and H1_load only>, "role": "idle" | "load",
+"needs": [files the item reads from its dependency], "make": [a script and its arguments, run before the capture],
+"show": <a file shown before the capture>}, ...] (needs, make and show added for the production plan of
+works/prototype_v7_plan.py, amendment B16; .steering/20261104-v7-production-plan)
 The name is the folder of the item under --out, CAPTURE_LAYOUT of works/prototype_v7_run.py (H1_idle/h00, L0/e0,
 M1_8B/t00, P_idle/c005, ...).
 An argument "{out:NAME}" is replaced by the output folder of the finished capture NAME (M1_replay types
-"{out:M1}/schedule.ndjson").
+"{out:M1}/schedule.ndjson"); "{root}" by the --out folder.
+Dependencies: an item with "after" and no "needs" runs only after its dependency ended done. An item with "needs" runs
+after its dependency ended done or failed (both attempts failed: its last folder keeps the plan files) when every file
+of "needs" exists: the analysis checks a failed capture's plan and its dependants against it (prototype_v7_run
+check_plans). Otherwise the item is no_plan (detail missing_dependency or missing_plan_file).
+"make" runs once before the item's first attempt ([python, *make] in the repository); a non-zero exit is no_plan
+(detail make_failed). "show" prints the file and waits for Enter (L0: the prompt the researcher writes on).
+--block b runs only block b, in its place of the whole order (the order of all blocks is drawn as without --block),
+into the same --out folder, with runlog.b<b>.ndjson; every earlier block must have a finished runlog there, whose
+items are the dependencies of block b. Without --block, every block runs in one runlog.ndjson.
 
 Order: one generator numpy.random.default_rng(key); blocks in ascending order, each block put in the order of
 rng.permutation(len(block)) [仮: one generator for all blocks, drawn block by block]. Then dependencies: an item whose
@@ -45,6 +57,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def check_items(items: list[dict]) -> None:
+    for it in items:
+        for f in ("needs", "make"):
+            if f in it and not (isinstance(it[f], list) and it[f] and all(isinstance(x, str) for x in it[f])):
+                raise ValueError(f"{it.get('name')}: {f} must be a non-empty list of strings")
+        if "show" in it and not isinstance(it["show"], str):
+            raise ValueError(f"{it.get('name')}: show must be a string")
+        if "needs" in it and not it.get("after"):
+            raise ValueError(f"{it.get('name')}: needs goes with after")
     names = [it["name"] for it in items]
     if len(set(names)) != len(names):
         raise ValueError("names must be unique")
@@ -116,12 +136,14 @@ def order(items: list[dict], key: list[int]) -> tuple[list[dict], int]:
     raise ValueError("the dependencies form a cycle")
 
 
-def resolve(args: list[str], done: dict[str, Path]) -> list[str]:
+def resolve(args: list[str], done: dict[str, Path], root: Path | None = None) -> list[str]:
     out = []
     for x in args:
+        if root is not None:
+            x = x.replace("{root}", str(root))
         for name, p in done.items():
             x = x.replace("{out:" + name + "}", str(p))
-        if "{out:" in x:
+        if "{out:" in x or "{root}" in x:
             raise ValueError(f"unresolved argument {x}")
         out.append(x)
     return out
@@ -136,9 +158,20 @@ def default_runner(args: list[str], out: Path) -> str:
     return json.loads(meta.read_text(encoding="utf-8")).get("status", f"failed (exit {r.returncode})")
 
 
+def default_maker(argv: list[str]) -> int:
+    """Make an item's plan before its capture (works/prototype_v7_plan.py derive); returns the exit code."""
+    return subprocess.run([sys.executable, *argv], cwd=ROOT).returncode
+
+
+def default_shower(path: str) -> None:
+    print("\n" + Path(path).read_text(encoding="utf-8").strip() + "\n", flush=True)
+    input("Press Enter when ready to start (the countdown follows). ")
+
+
 NO_PLAN = "m2_failed"  # an M2 plan failing three times: a counted result of the series, nothing typed, not redone
 RESULT = {"done": "done", "done_after_redo": "redone", "missing_after_redo": "failed", "rename_failed": "failed",
-          "m2_failed": "no_plan", "missing_dependency": "no_plan"}
+          "m2_failed": "no_plan", "missing_dependency": "no_plan", "missing_plan_file": "no_plan",
+          "make_failed": "no_plan"}
 
 
 def rename(src: Path, dst: Path, tries: int = 10, wait_s: float = 1.0) -> None:
@@ -160,31 +193,79 @@ def redo_args(args: list[str], first: Path) -> list[str]:
     return [x for x in args if x != "--llm-plan"] + ["--events", str(first / "events.ndjson")]
 
 
-def run(items: list[dict], key: list[int], out: Path, runner=default_runner) -> list[dict]:
-    out.mkdir(parents=True, exist_ok=False)
+def earlier_blocks(out: Path, blocks: list[int], block: int) -> tuple[dict[str, Path], dict[str, Path]]:
+    """The items of the finished runlogs of the blocks before `block`: (done, attempted) as run() keeps them."""
+    done: dict[str, Path] = {}
+    attempted: dict[str, Path] = {}
+    for b in blocks:
+        if b >= block:
+            continue
+        f = out / f"runlog.b{b}.ndjson"
+        if not f.exists():
+            raise ValueError(f"block {b} comes before block {block} and has no runlog in {out}")
+        rows = [json.loads(ln) for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        if not rows or rows[0].get("type") != "header" or rows[-1].get("type") != "footer":
+            raise ValueError(f"{f} did not finish (no header or footer line): ask before going on")
+        for r in rows[1:-1]:
+            if r.get("result") in ("done", "redone"):
+                done[r["item"]] = attempted[r["item"]] = out / r["item"]
+            elif r.get("detail") == "missing_after_redo":
+                attempted[r["item"]] = out / r["item"]
+    return done, attempted
+
+
+def run(items: list[dict], key: list[int], out: Path, runner=default_runner, block: int | None = None,
+        maker=default_maker, shower=default_shower) -> list[dict]:
     seq, moves = order(items, key)
-    log = open(out / "runlog.ndjson", "x", encoding="utf-8", newline="\n")
+    if block is None:
+        out.mkdir(parents=True, exist_ok=False)
+        log_name, done, attempted = "runlog.ndjson", {}, {}
+    else:
+        blocks = sorted({it["block"] for it in items})
+        if block not in blocks:
+            raise ValueError(f"no item in block {block}")
+        out.mkdir(parents=True, exist_ok=True)
+        if (out / "runlog.ndjson").exists():
+            raise ValueError(f"{out} holds a runlog of all blocks: --block is not mixed with it")
+        done, attempted = earlier_blocks(out, blocks, block)
+        seq = [it for it in seq if it["block"] == block]
+        log_name = f"runlog.b{block}.ndjson"
+    log = open(out / log_name, "x", encoding="utf-8", newline="\n")
 
     def write(rec: dict) -> None:
         log.write(json.dumps(rec) + "\n")
         log.flush()
 
-    write({"type": "header", "key": key, "order": [it["name"] for it in seq], "dependency_moves": moves,
-           "start_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")})
-    done: dict[str, Path] = {}
+    write({"type": "header", "key": key, "block": block, "order": [it["name"] for it in seq],
+           "dependency_moves": moves, "start_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     results = []
+
+    def no_plan(name: str, detail: str, **extra) -> None:
+        rec = {"type": "item", "item": name, "result": RESULT[detail], "detail": detail, **extra}
+        write(rec)
+        results.append(rec)
+
     for it in seq:
         name = it["name"]
         dep = it.get("after")
-        if dep and dep not in done:
-            rec = {"type": "item", "item": name, "result": RESULT["missing_dependency"],
-                   "detail": "missing_dependency", "dependency": dep}
-            write(rec)
-            results.append(rec)
+        if dep and dep not in (attempted if "needs" in it else done):
+            no_plan(name, "missing_dependency", dependency=dep)
             continue
+        if "needs" in it:
+            missing = [f for f in resolve(it["needs"], attempted, out) if not Path(f).exists()]
+            if missing:
+                no_plan(name, "missing_plan_file", dependency=dep, missing=missing)
+                continue
+        if "make" in it:
+            rc = maker(resolve(it["make"], attempted, out))
+            if rc != 0:
+                no_plan(name, "make_failed", exit=rc)
+                continue
+        if "show" in it:
+            shower(it["show"])
         attempts = []
         folder = out / name
-        args = resolve(it["args"], done)
+        args = resolve(it["args"], attempted, out)
         detail = "missing_after_redo"
         for a in range(2):
             t0 = time.time()
@@ -192,7 +273,7 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner) -> 
             attempts.append({"folder": str(folder.relative_to(out)), "status": status,
                              "seconds": round(time.time() - t0, 1)})
             if status == "done":
-                done[name] = folder
+                done[name] = attempted[name] = folder
                 detail = "done" if a == 0 else "done_after_redo"
                 break
             if status == NO_PLAN:
@@ -214,6 +295,8 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner) -> 
                 if new_args != args:
                     attempts[-1]["plan_kept_for_redo"] = str((first / "events.ndjson").relative_to(out))
                 args = new_args
+        if detail == "missing_after_redo":   # both attempts failed: the last folder keeps the plan files
+            attempted[name] = folder
         rec = {"type": "item", "item": name, "result": RESULT[detail], "detail": detail, "attempts": attempts}
         write(rec)
         results.append(rec)
@@ -229,9 +312,10 @@ def main() -> int:
     ap.add_argument("--list", type=Path, required=True)
     ap.add_argument("--key", type=int, nargs="+", required=True)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--block", type=int)
     a = ap.parse_args()
     items = json.loads(a.list.read_text(encoding="utf-8"))
-    res = run(items, a.key, a.out)
+    res = run(items, a.key, a.out, block=a.block)
     print(json.dumps(res, indent=1))
     return 0
 
