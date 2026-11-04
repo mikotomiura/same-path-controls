@@ -7,6 +7,7 @@
   common: --load <model> --load-prompt-file <p.txt>   background inference load
           --no-hook                                   the browser page only (P_nohook, amendments B11 and B14)
           --browser chrome|edge  --inject unicode|vk  --auto-focus
+          --no-mouse-guard                            do not hold the mouse while typing (held by default)
 
 Order: (M2: the plan is made and the model unloaded first) monitor -> load -> server -> browser on the page -> hook ->
 'click in the box and press Enter' (or --auto-focus: the session brings the page to the front and focuses the box)
@@ -149,6 +150,25 @@ class Hook(Child):
         self.p.wait(timeout)
 
 
+class MouseGuard(Child):
+    """capture.mouseguard: holds mouse buttons and wheel while presses are typed (not in the live capture)."""
+
+    def __init__(self):
+        super().__init__(["capture.mouseguard"], "mouseguard")
+        self.tid = int(self.first.split()[1])
+        self.swallowed: int | None = None
+
+    def stop(self, timeout: float = 30) -> None:
+        if self.p.poll() is not None:
+            raise RuntimeError(f"the mouse guard ended early ({self.p.returncode})")
+        ctypes.WinDLL("user32").PostThreadMessageW(self.tid, 0x0012, 0, 0)  # WM_QUIT
+        out, _ = self.p.communicate(timeout=timeout)
+        w = out.split()
+        if len(w) < 2 or w[0] != "DONE":
+            raise RuntimeError(f"the mouse guard did not report: {out!r}")
+        self.swallowed = int(w[1])
+
+
 class Page:
     def __init__(self, port: int):
         self.base = f"http://127.0.0.1:{port}"
@@ -188,6 +208,7 @@ def parse(argv=None) -> argparse.Namespace:
     ap.add_argument("--browser", default="chrome", choices=["chrome", "edge"])  # [仮] chrome (returns/questions.md)
     ap.add_argument("--inject", default="unicode", choices=["unicode", "vk"])
     ap.add_argument("--auto-focus", action="store_true")
+    ap.add_argument("--no-mouse-guard", action="store_true")
     ap.add_argument("--ready-timeout", type=float, default=300.0)
     a = ap.parse_args(argv)
     if (a.llm_stream or a.llm_plan) and not (a.model and a.prompt_file and a.seed is not None):
@@ -259,6 +280,8 @@ def main(argv=None) -> int:
     kids: list = []
     b = None
     hook = None
+    guard = None
+    meta["mouse_guard"] = {"used": not (a.live or a.no_mouse_guard)}
     try:
         mon = Child(["capture.monitor", "--out", str(out / "monitor.ndjson")], "monitor")
         kids.append(mon)
@@ -295,6 +318,8 @@ def main(argv=None) -> int:
         n_armed = page.state()["counts"]["armed"]
         page.cmd("arm")
         page.wait("armed", n_armed + 1, 10)
+        if meta["mouse_guard"]["used"]:
+            guard = MouseGuard()
         for k in range(COUNTDOWN_S, 0, -1):
             print(f"{k}...", flush=True)
             time.sleep(1.0)
@@ -333,6 +358,10 @@ def main(argv=None) -> int:
                 interrupted = summ
         meta["typing_end_perf_ns"] = time.perf_counter_ns()
         meta["typing_end_utc"] = now_utc()
+        if guard is not None:
+            guard.stop()
+            meta["mouse_guard"]["swallowed"] = guard.swallowed
+            guard = None
         time.sleep(AFTER_S)
         n_log = page.state()["counts"]["log"]
         page.cmd("flush")
@@ -348,6 +377,12 @@ def main(argv=None) -> int:
         raise
     finally:
         errors = []
+        if guard is not None:  # an exception during typing: release the mouse first
+            try:
+                guard.stop()
+                meta["mouse_guard"]["swallowed"] = guard.swallowed
+            except Exception as e:  # noqa: BLE001 - collected and raised below
+                errors.append(f"mouseguard: {e}")
         if hook is not None:
             try:
                 hook.stop()

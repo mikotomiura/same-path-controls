@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from capture import events, hooklog, serve, summary  # noqa: E402
+from capture import events, hooklog, mouseguard, serve, summary  # noqa: E402
 
 WIN = sys.platform == "win32"
 # a US-like layout: a-z at 0x41.., digits at 0x30.., space 0x20, '.' 0xBE, ',' 0xBC, '!' shift+1, '?' shift+0xBF
@@ -108,6 +108,13 @@ def test_summary_counts_drops_and_deviation():
     assert back["earlier_than_previous"] == 1
 
 
+def test_mouse_guard_holds_buttons_and_wheel_not_movement_or_injected():
+    for msg in (0x0201, 0x0202, 0x0204, 0x0205, 0x0207, 0x0208, 0x020A, 0x020B, 0x020E):  # buttons, wheel
+        assert mouseguard.swallow(msg, 0)
+        assert not mouseguard.swallow(msg, mouseguard.LLMHF_INJECTED)
+    assert not mouseguard.swallow(mouseguard.WM_MOUSEMOVE, 0)
+
+
 @pytest.mark.skipif(not WIN, reason="SendInput and WH_KEYBOARD_LL need Windows")
 def test_real_press_seen_by_hook_as_injected(tmp_path):
     """The smallest real press: one character, Enter and Delete typed into the capture page (Chrome, auto focus);
@@ -126,5 +133,7 @@ def test_real_press_seen_by_hook_as_injected(tmp_path):
     assert [x.get("vk") for x in downs] == [None, 0x0D, 0x2E]
     s = json.loads((tmp_path / "o" / "summary.json").read_text())
     assert s["page"]["n"] == 3 and s["page"]["kinds_equal"] and s["hook"]["kinds_equal"]
+    meta = json.loads((tmp_path / "o" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["mouse_guard"] == {"used": True, "swallowed": 0}
     text = (tmp_path / "o" / "hook.ndjson").read_text() + (tmp_path / "o" / "page.ndjson").read_text()
     assert '"x"' not in text

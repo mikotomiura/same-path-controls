@@ -137,6 +137,8 @@ def summarize(out: Path) -> dict:
         gens = [r for r in load if r.get("type") == "generation"]
         s["load"] = {"generations": len(gens), "restarts": max(len(gens) - 1, 0),
                      "completed": sum(r["completed"] for r in gens)}
+        if t0 and t1:  # restarts while presses were typed: generations that began inside the typing
+            s["load"]["restarts_during_typing"] = sum(t0 <= r["start_perf_ns"] <= t1 for r in gens)
     for k in ("llm_stream", "llm_plan"):
         if k in meta:
             s[k] = meta[k]
