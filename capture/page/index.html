@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>v7 capture page</title>
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 24px; background: #fff; color: #111; }
+  textarea { width: 100%; height: 60vh; font: 16px monospace; }
+  #msg { margin: 8px 0; font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="msg">Click in the box and press Enter.</div>
+<textarea id="ta" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+<script>
+// The browser layer of capture spec section 3b. keydown is kept as its time (event.timeStamp), the kind of
+// event.key, repeat, isTrusted and isComposing; a key name from KEPT_NAMES (Shift, Unidentified, ...) is kept as
+// 'name', and no other key value is ever written. The characters typed are never sent and the box is emptied after each capture.
+"use strict";
+const ta = document.getElementById("ta");
+const msg = document.getElementById("msg");
+let armed = false;
+let log = [];
+
+// Key names that may be kept in the record ('name'). Any other key value is never written: a character outside the
+// Basic Multilingual Plane (an emoji) has length 2 and must not be taken for a key name (review of 2026-11-04).
+const KEPT_NAMES = new Set(["Enter", "Backspace", "Delete", "Escape", "Shift", "Control", "Alt", "Meta", "CapsLock",
+  "AltGraph", "Tab", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", "Insert",
+  "Process", "Unidentified", "Dead", "NumLock", "ScrollLock", "Pause", "ContextMenu",
+  "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]);
+
+// e: the KeyboardEvent (or an object with key, ctrlKey, altKey, metaKey). Enter, Backspace and Delete keep their kind
+// with Ctrl, Alt or Meta held (Ctrl+Backspace is one Backspace press), and any other key pressed with them types no
+// character: 'nonchar'. Both as the hook classifies them (hooklog.classify; review of 2026-11-04).
+function kindOf(e) {
+  const k = e.key;
+  if (k === "Shift" || k === "Control" || k === "Alt" || k === "Meta" || k === "CapsLock" || k === "AltGraph") return "modifier";
+  if (k === "Enter") return "enter";
+  if (k === "Backspace") return "backspace";
+  if (k === "Delete") return "delete";
+  if (e.ctrlKey || e.altKey || e.metaKey) return "nonchar";
+  if (k.length !== 1) return "nonchar";
+  if (/^[A-Za-z0-9]$/.test(k)) return "alnum";
+  if (k === " ") return "space";
+  if (k === "." || k === "!" || k === "?") return "end";
+  return "other";
+}
+
+function post(path, body) {
+  return fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+}
+
+function clocks() {
+  return {time_origin_ms: performance.timeOrigin, date_now_ms: Date.now(), perf_now_ms: performance.now()};
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!armed) {
+    if (e.key === "Enter" && !e.isComposing && document.activeElement === ta) {
+      e.preventDefault();
+      post("/ready", clocks());
+      msg.textContent = "Ready. Wait for the signal.";
+    }
+    return;
+  }
+  const r = {t_ms: e.timeStamp, h_ms: performance.now(), kind: kindOf(e), repeat: e.repeat,
+             trusted: e.isTrusted, composing: e.isComposing, in_box: document.activeElement === ta};
+  if (KEPT_NAMES.has(e.key)) r.name = e.key;
+  log.push(r);
+}, true);
+
+async function handle(cmd) {
+  if (cmd === "status") {
+    await post("/status", {has_focus: document.hasFocus(), box_active: document.activeElement === ta,
+                           visibility: document.visibilityState, ...clocks()});
+  } else if (cmd === "focus") {
+    ta.focus();
+    await post("/status", {has_focus: document.hasFocus(), box_active: document.activeElement === ta,
+                           visibility: document.visibilityState, ...clocks()});
+  } else if (cmd === "arm") {
+    log = [];
+    ta.value = "";
+    armed = true;
+    msg.textContent = "Recording.";
+    await post("/armed", clocks());
+  } else if (cmd === "flush") {
+    armed = false;
+    const entries = log;
+    log = [];
+    ta.value = "";
+    msg.textContent = "Done.";
+    await post("/log", {entries: entries, ...clocks()});
+  }
+}
+
+async function loop() {
+  for (;;) {
+    try {
+      const r = await fetch("/cmd");
+      const c = await r.json();
+      if (c.cmd === "quit") return;
+      if (c.cmd !== "none") await handle(c.cmd);
+    } catch (err) {
+      await new Promise((ok) => setTimeout(ok, 500));
+    }
+  }
+}
+
+window.addEventListener("load", () => {
+  ta.value = "";
+  ta.focus();
+  post("/open", {user_agent: navigator.userAgent, cross_origin_isolated: self.crossOriginIsolated, ...clocks()});
+  loop();
+});
+</script>
+</body>
+</html>

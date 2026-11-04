@@ -1,0 +1,149 @@
+"""Start the browser on the page, bring it to the front and turn the IME off (Windows only).
+
+The browser runs in a profile made for the capture (a new temporary folder), so that no extension, history or
+restored session of the user's profile enters it, and the profile is deleted afterwards (the page empties its box,
+and no typed text is left on disk by the browser either).
+"""
+
+from __future__ import annotations
+
+import ctypes
+import shutil
+import subprocess
+import tempfile
+import time
+from ctypes import wintypes
+from pathlib import Path
+
+EXE = {
+    "chrome": Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+    "edge": Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+}
+TITLE = "v7 capture page"
+WM_IME_CONTROL = 0x0283
+IMC_GETOPENSTATUS, IMC_SETOPENSTATUS = 0x0005, 0x0006
+
+
+def file_version(path: Path) -> str:
+    v = ctypes.WinDLL("version")
+    size = v.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        raise OSError(f"no version information in {path}")
+    buf = ctypes.create_string_buffer(size)
+    v.GetFileVersionInfoW(str(path), 0, size, buf)
+    p, n = ctypes.c_void_p(), wintypes.UINT()
+    v.VerQueryValueW(buf, "\\", ctypes.byref(p), ctypes.byref(n))
+
+    class VS_FIXEDFILEINFO(ctypes.Structure):
+        _fields_ = [(f, wintypes.DWORD) for f in ("sig", "strucver", "ms", "ls", "pms", "pls", "mask", "flags", "os",
+                                                    "type", "subtype", "dms", "dls")]
+
+    fi = ctypes.cast(p, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
+    return f"{fi.pms >> 16}.{fi.pms & 0xFFFF}.{fi.pls >> 16}.{fi.pls & 0xFFFF}"
+
+
+def _user32():
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    u.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    u.SendMessageW.restype = ctypes.c_ssize_t
+    u.GetForegroundWindow.restype = wintypes.HWND
+    return u
+
+
+def find_window(title: str = TITLE) -> int | None:
+    u = _user32()
+    found = []
+    PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def cb(hwnd, _):
+        if u.IsWindowVisible(hwnd):
+            buf = ctypes.create_unicode_buffer(512)
+            u.GetWindowTextW(hwnd, buf, 512)
+            if buf.value.startswith(title):
+                found.append(hwnd)
+        return True
+
+    u.EnumWindows(PROC(cb), 0)
+    return found[0] if found else None
+
+
+def foreground(hwnd: int) -> bool:
+    """Bring the window to the front. Windows lets a process do this only in some states; an Alt tap (a modifier,
+    recorded by the hook as 'modifier' before the capture is armed) unlocks it, as is common practice."""
+    u = _user32()
+    if u.GetForegroundWindow() == hwnd:
+        return True
+    u.keybd_event(0x12, 0, 0, 0)
+    u.keybd_event(0x12, 0, 2, 0)
+    u.ShowWindow(hwnd, 9)  # SW_RESTORE
+    u.SetForegroundWindow(hwnd)
+    time.sleep(0.3)
+    return u.GetForegroundWindow() == hwnd
+
+
+def ime_open(hwnd: int) -> int:
+    """The IME open status of the window (1 open = Japanese input, 0 closed = direct input)."""
+    imm = ctypes.WinDLL("imm32")
+    imm.ImmGetDefaultIMEWnd.restype = wintypes.HWND
+    ime = imm.ImmGetDefaultIMEWnd(hwnd)
+    return int(_user32().SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0))
+
+
+def ime_close(hwnd: int) -> tuple[int, int]:
+    """Close the IME of the window (direct input). Returns the status before and after."""
+    imm = ctypes.WinDLL("imm32")
+    imm.ImmGetDefaultIMEWnd.restype = wintypes.HWND
+    ime = imm.ImmGetDefaultIMEWnd(hwnd)
+    u = _user32()
+    before = int(u.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0))
+    u.SendMessageW(ime, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)
+    after = int(u.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0))
+    return before, after
+
+
+class Browser:
+    def __init__(self, name: str, url: str):
+        if name not in EXE:
+            raise ValueError(f"browser must be one of {sorted(EXE)}")
+        self.name, self.url = name, url
+        self.exe = EXE[name]
+        self.version = file_version(self.exe)
+        self.profile = Path(tempfile.mkdtemp(prefix="v7-capture-profile-"))
+        self.proc: subprocess.Popen | None = None
+        self.started_ns: int | None = None
+
+    def args(self) -> list[str]:
+        return [str(self.exe), f"--user-data-dir={self.profile}", "--no-first-run", "--no-default-browser-check",
+                "--disable-extensions", "--disable-sync", "--disable-translate", "--new-window", self.url]
+
+    def start(self, timeout_s: float = 20.0) -> int:
+        self.started_ns = time.time_ns()
+        self.proc = subprocess.Popen(self.args())
+        end = time.monotonic() + timeout_s
+        while time.monotonic() < end:
+            hwnd = find_window()
+            if hwnd:
+                return hwnd
+            time.sleep(0.2)
+        raise TimeoutError(f"the page window did not appear in {timeout_s} s")
+
+    def close(self) -> None:
+        if self.proc is not None:
+            # the profile's browser processes are found by the profile path on their command line
+            subprocess.run(["powershell", "-NoProfile", "-Command",
+                            "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*"
+                            + str(self.profile).replace("'", "''") + "*' } | "
+                            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+                           capture_output=True)
+            try:
+                self.proc.wait(10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        for _ in range(20):
+            try:
+                shutil.rmtree(self.profile)
+                return
+            except OSError:
+                time.sleep(0.5)
+        raise OSError(f"could not delete the browser profile {self.profile}")
