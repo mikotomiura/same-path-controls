@@ -89,7 +89,8 @@ def write_layers(d: Path, times: np.ndarray, kinds: list[str], rng: np.random.Ge
 
 def write_runlog(path: Path, items: list[dict]) -> None:
     """The capture code's runlog.ndjson (capture/runlist.py): header, one item line per item, footer."""
-    write_ndjson(path, [{"type": "header", "key": [20261031, 7, 6], "order": [], "dependency_moves": 0}]
+    write_ndjson(path, [{"type": "header", "key": [20261031, 7, 6], "block": None, "runs_sha256": "test", "order": [],
+                         "dependency_moves": 0}]
                  + [{"type": "item", "detail": "-", "attempts": [], **r} for r in items]
                  + [{"type": "footer", "counts": {}}])
 

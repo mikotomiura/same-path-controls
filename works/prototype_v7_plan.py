@@ -310,6 +310,12 @@ def build(c: dict, h_series: list[tuple[np.ndarray, list[str]]], donors: dict[in
     return manifest
 
 
+def persons_record(ps: "vr.Persons") -> dict:
+    """The manifest's persons (read back by prototype_v7_run.read_plan): SHA-256 of sorted ids, never an id."""
+    return {"pool_sha256": vr.sha_ids(ps.pool), "replay_H_sha256": vr.sha_ids(ps.h), "ids_looked_at": ps.looked,
+            "E": len(ps.e), "v6_200_match": True}
+
+
 def pool_v6_sha(c: dict) -> str:
     """persons.pool names v6's 200 by 'ids_sha256 <hex>'."""
     import re
@@ -321,8 +327,8 @@ def pool_v6_sha(c: dict) -> str:
 
 def git_clean_commit() -> str:
     """The plan is made from a committed state only (its code and the conditions are named by the commit)."""
-    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, capture_output=True,
-                           text=True, check=True).stdout.strip()
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True,
+                           text=True, check=True).stdout.strip()   # untracked files too (ignored ones are not listed)
     if dirty:
         raise PlanStop("the repository has uncommitted changes: commit or ask before making the plan")
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
@@ -359,16 +365,14 @@ def main_make(out: Path) -> None:
         raise PlanStop(f"{out} exists; a plan is never written over")
     try:
         man = build(c, h_series, e_gaps, len(ps.e), prompts, out)
+        man.update({"conditions_sha256": hashlib.sha256(raw).hexdigest(), "git_commit": commit, "git_dirty": False,
+                    "data_sha256": {n: s_ for n, (_, s_) in files.items()}, "persons": persons_record(ps),
+                    "plan_code_sha256": sha256(Path(__file__))})
+        with open(out / "manifest.json", "x", encoding="utf-8", newline="\n") as f:
+            json.dump(man, f, indent=1)
     except BaseException:
-        shutil.rmtree(out, ignore_errors=True)   # no half-written plan is left to be run
+        shutil.rmtree(out, ignore_errors=True)   # no half-written plan (or one without its manifest) is left
         raise
-    man.update({"conditions_sha256": hashlib.sha256(raw).hexdigest(), "git_commit": commit, "git_dirty": False,
-                "data_sha256": {n: s_ for n, (_, s_) in files.items()},
-                "persons": {"pool_sha256": vr.sha_ids(ps.pool), "replay_H_sha256": vr.sha_ids(ps.h),
-                            "ids_looked_at": ps.looked, "E": len(ps.e), "v6_200_match": True},
-                "plan_code_sha256": sha256(Path(__file__))})
-    with open(out / "manifest.json", "x", encoding="utf-8", newline="\n") as f:
-        json.dump(man, f, indent=1)
     print(json.dumps({k: man[k] for k in ("n_items", "items_per_block", "replaced_keys_H", "l0_prompts")}))
 
 
@@ -388,8 +392,8 @@ def m1_plan(m1: Path) -> list[str]:
             raise NoPlan(f"{m1} left no schedule.ndjson")
         raise PlanStop(f"{m1} is done but holds no schedule.ndjson")
     plan = vr.read_events(m1 / "schedule.ndjson")
-    if plan.times.size < 2:
-        raise NoPlan(f"{m1}: the plan holds fewer than 2 presses")
+    if failed and plan.times.size < 2:   # load_capture: a failed plan of fewer than 2 presses is no plan
+        raise NoPlan(f"{m1}: the failed capture's plan holds fewer than 2 presses")
     try:
         arr, toks, end, _ = vr.read_llm_stream(m1 / "llm.ndjson", unfinished=failed)
         _, _, ex, keys = vr.m1_schedule(arr, toks, end)
@@ -407,6 +411,8 @@ def derive(series: str, text: int, m1: Path, plan: Path) -> list[dict]:
     if not 0 <= text < vr.N_TEXTS:
         raise PlanStop(f"text must be in 0..{vr.N_TEXTS - 1}")
     keys = m1_plan(m1)
+    if len(keys) < 2:
+        raise NoPlan(f"{m1}: M1_8B's plan holds fewer than 2 presses: no text for M0 and M3")
     if series == "M0":
         return ev.make([i * vr.M0_GAP_MS for i in range(len(keys))], keys)
     if series not in ("M3a", "M3b"):

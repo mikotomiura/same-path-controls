@@ -9,7 +9,8 @@ Planning only (no typing; the check of decision 3 of .steering/20261104-v7-captu
     python -m capture.llm_plan --model <m> --prompt-file <task.txt> --seed 1 --out <new folder> [--num-predict N]
 writes llm.ndjson (every attempt, as session --llm-plan) and result.json (per attempt: ok, reason, characters of the
 answer, ollama's done_reason and eval_count, seconds). --num-predict is for an extra record only: the production
-(session --llm-plan) never sets it.
+(session --llm-plan) never sets it. The exit code is 0 whether or not the plan passed (result.json says which): a
+check, not a capture.
 
 [decided by the researcher, 2026-11-04] Attempts 2 and 3 cannot reuse the seed (with the same seed and options the output repeats), so attempt a
 (a = 0, 1, 2) uses the option seed `seed + 1000 * a` (returns/questions.md).
@@ -93,6 +94,8 @@ def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None, 
         from capture import ollama
         generate = ollama.generate
     from capture.ollama import TEMPERATURE
+    if extra_options and set(extra_options) & {"temperature", "seed"}:
+        raise ValueError("extra_options may not set temperature or seed (the conditions fix them)")
     prompt = plan_prompt(essay_prompt)
     failures = []
     for a in range(MAX_ATTEMPTS):
@@ -141,13 +144,15 @@ def main(argv=None, generate=None) -> int:
     a.out.mkdir(parents=True, exist_ok=False)
     task = a.prompt_file.read_text(encoding="utf-8").strip()
     extra = {"num_predict": a.num_predict} if a.num_predict is not None else None
-    with open(a.out / "llm.ndjson", "x", encoding="utf-8", newline="\n") as log:
-        model = ollama.model_record(a.model) if generate is None else {"name": a.model}
-        log.write(json.dumps({"type": "header", "model": model, "seed": a.seed, "extra_options": extra,
-                              "prompt": plan_prompt(ollama.essay_prompt(task))}) + "\n")
-        res = make_plan(a.model, ollama.essay_prompt(task), a.seed, log, generate=generate, extra_options=extra)
-    if generate is None:
-        ollama.unload(a.model)
+    try:
+        with open(a.out / "llm.ndjson", "x", encoding="utf-8", newline="\n") as log:
+            model = ollama.model_record(a.model) if generate is None else {"name": a.model}
+            log.write(json.dumps({"type": "header", "model": model, "seed": a.seed, "extra_options": extra,
+                                  "prompt": plan_prompt(ollama.essay_prompt(task))}) + "\n")
+            res = make_plan(a.model, ollama.essay_prompt(task), a.seed, log, generate=generate, extra_options=extra)
+    finally:
+        if generate is None:
+            ollama.unload(a.model)
     result = {"model": a.model, "seed": a.seed, "extra_options": extra, "ok": res["ok"], "attempts": res["attempts"],
               "n_presses": len(res["presses"]), "skipped_chars": res["skipped_chars"],
               "per_attempt": summarize_attempts(a.out / "llm.ndjson")}

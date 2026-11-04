@@ -242,3 +242,8 @@ def test_the_production_plan_sets_no_num_predict():
     llm_plan.make_plan("m", "Write.", 1, io.StringIO(),
                        generate=lambda b: bodies.append(b) or {"response": '{"text": "a", "gaps_ms": [0]}'})
     assert set(bodies[0]["options"]) == {"temperature", "seed"}
+
+
+def test_extra_options_may_not_set_the_seed_or_temperature():
+    with pytest.raises(ValueError):
+        llm_plan.make_plan("m", "Write.", 1, io.StringIO(), generate=lambda b: {}, extra_options={"seed": 5})

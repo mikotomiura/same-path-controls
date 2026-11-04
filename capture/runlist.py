@@ -15,7 +15,7 @@ Dependencies: an item with "after" and no "needs" runs only after its dependency
 after its dependency ended done or failed (both attempts failed: its last folder keeps the plan files) when every file
 of "needs" exists: the analysis checks a failed capture's plan and its dependants against it (prototype_v7_run
 check_plans). Otherwise the item is no_plan (detail missing_dependency or missing_plan_file).
-"make" runs once before the item's first attempt ([python, *make] in the repository): exit 0 goes on, exit 3
+"make" runs once before the item's first attempt, before "needs" is looked at ([python, *make] in the repository): exit 0 goes on, exit 3
 (NO_PLAN_EXIT: the dependency left no plan the analysis reads, e.g. works/prototype_v7_plan.py gate-m1) is no_plan
 (detail make_no_plan), and any other exit stops the runlist (a fault of the code or the machine is not a missing
 plan; the runlog is left without its footer and the next block refuses to start). "show" prints the file and waits
@@ -277,12 +277,7 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
         if dep and dep not in (attempted if "needs" in it else done):
             no_plan(name, "missing_dependency", dependency=dep)
             continue
-        if "needs" in it:
-            missing = [f for f in resolve(it["needs"], attempted, out) if not Path(f).exists()]
-            if missing:
-                no_plan(name, "missing_plan_file", dependency=dep, missing=missing)
-                continue
-        if "make" in it:
+        if "make" in it:   # before needs: the make (gate-m1, derive) tells a missing plan from a fault
             rc = maker(resolve(it["make"], attempted, out))
             if rc == NO_PLAN_EXIT:
                 no_plan(name, "make_no_plan", exit=rc)
@@ -291,6 +286,11 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
                 log.close()
                 raise RuntimeError(f"{name}: make exited {rc} (not a missing plan): the runlist stops; ask before "
                                    "going on")
+        if "needs" in it:
+            missing = [f for f in resolve(it["needs"], attempted, out) if not Path(f).exists()]
+            if missing:
+                no_plan(name, "missing_plan_file", dependency=dep, missing=missing)
+                continue
         if "show" in it:
             shower(it["show"])
         attempts = []

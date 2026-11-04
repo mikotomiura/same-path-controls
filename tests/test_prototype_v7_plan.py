@@ -547,19 +547,122 @@ def test_the_analysis_checks_the_runlog_headers(captured, tmp_path):
             vr.read_runlogs(d)
 
 
+def plan_copy(plan, tmp_path: Path) -> tuple[Path, vr.Persons, str]:
+    """A copy of the plan with the manifest main_make writes (persons_record, conditions' SHA-256)."""
+    import shutil
+    d = tmp_path / "plan"
+    shutil.copytree(plan["out"], d)
+    ps = vr.Persons(pool=["a", "b", "c"], h=["a", "b"], e=["c"], donors=np.array([]), e_train=np.array([]), looked=3)
+    cond = "c" * 64
+    (d / "manifest.json").write_text(json.dumps({**plan["man"], "persons": vp.persons_record(ps),
+                                                 "conditions_sha256": cond}))
+    return d, ps, cond
+
+
+def logs_copy(captured, tmp_path: Path) -> Path:
+    d = tmp_path / "caps"
+    d.mkdir(parents=True)
+    for f in captured["out"].glob("runlog*.ndjson"):
+        (d / f.name).write_text(f.read_text())
+    return d
+
+
 def test_the_analysis_reads_the_plans_manifest(plan, captured, tmp_path):
-    (plan["out"] / "manifest.json").write_text(json.dumps({**plan["man"],
-                                                           "persons": {"replay_H_sha256": vr.sha_ids(["a", "b"])}}))
-    heads = vr.runlog_headers(captured["out"])
-    ps = vr.Persons(pool=[], h=["a", "b"], e=[], donors=np.array([]), e_train=np.array([]), looked=0)
-    got = vr.read_plan(plan["out"], heads, ps)
+    d, ps, cond = plan_copy(plan, tmp_path)
+    got = vr.read_plan(d, captured["out"], ps, cond)
     assert got["replaced_keys_H"] == plan["man"]["replaced_keys_H"]
-    assert got["runs_sha256"] == heads[0]["runs_sha256"] == runs_file_sha(plan)
+    assert got["runs_sha256"] == vr.runlog_headers(captured["out"])[0]["runs_sha256"] == runs_file_sha(plan)
+    with pytest.raises(SystemExit, match="other conditions"):
+        vr.read_plan(d, captured["out"], ps, "d" * 64)
     with pytest.raises(SystemExit, match="replay persons"):
-        vr.read_plan(plan["out"], heads, vr.Persons([], ["c"], [], np.array([]), np.array([]), 0))
-    with pytest.raises(SystemExit, match="another runs.json"):
-        vr.read_plan(plan["out"], [{"runs_sha256": "0" * 64}], ps)
-    (plan["out"] / "manifest.json").unlink()
+        vr.read_plan(d, captured["out"], vr.Persons([], ["z"], [], np.array([]), np.array([]), 0), cond)
+
+
+def test_a_changed_plan_file_stops_the_analysis(plan, captured, tmp_path):
+    d, ps, cond = plan_copy(plan, tmp_path)
+    (d / "prompts" / "P3.txt").write_text("Another task.\n")
+    with pytest.raises(SystemExit, match="P3.txt"):
+        vr.read_plan(d, captured["out"], ps, cond)
+    d2, _, _ = plan_copy(plan, tmp_path / "2")
+    (d2 / "extra.txt").write_text("x")
+    with pytest.raises(SystemExit, match="files are not"):
+        vr.read_plan(d2, captured["out"], ps, cond)
+
+
+def test_runlogs_of_another_runs_order_or_block_stop_the_analysis(plan, captured, tmp_path):
+    d, ps, cond = plan_copy(plan, tmp_path)
+    for case in ("sha", "order", "swap", "header_order"):
+        caps = logs_copy(captured, tmp_path / case)
+        f = caps / "runlog.b3.ndjson"
+        rows = f.read_text().splitlines()
+        h = json.loads(rows[0])
+        if case == "sha":
+            for g in caps.glob("runlog*.ndjson"):
+                r = g.read_text().splitlines()
+                g.write_text("\n".join([json.dumps({**json.loads(r[0]), "runs_sha256": "0" * 64})] + r[1:]) + "\n")
+            msg = "another runs.json"
+        elif case == "order":
+            rows[1], rows[2] = rows[2], rows[1]
+            f.write_text("\n".join(rows) + "\n")
+            msg = "order"
+        elif case == "header_order":   # the lines as drawn, the header naming another order
+            f.write_text("\n".join([json.dumps({**h, "order": h["order"][::-1]})] + rows[1:]) + "\n")
+            msg = "items or their order"
+        else:   # an item moved from block 3 to block 4
+            g = caps / "runlog.b4.ndjson"
+            r4 = g.read_text().splitlines()
+            g.write_text("\n".join(r4[:-1] + [rows[1], r4[-1]]) + "\n")
+            f.write_text("\n".join(rows[:1] + rows[2:]) + "\n")
+            msg = "items or their order"
+        with pytest.raises(SystemExit, match=msg):
+            vr.read_plan(d, caps, ps, cond)
+    assert h["block"] == 3
+
+
+def test_a_single_runlog_without_the_runs_sha_stops(captured, tmp_path):
+    d = tmp_path / "one"
+    d.mkdir()
+    rows = (captured["out"] / "runlog.b2.ndjson").read_text().splitlines()
+    h = json.loads(rows[0])
+    for change in ({"block": None, "runs_sha256": None}, {"block": 2}):
+        (d / "runlog.ndjson").write_text("\n".join([json.dumps({**h, **change})] + rows[1:]) + "\n")
+        with pytest.raises(SystemExit, match="does not name"):
+            vr.runlog_headers(d)
+
+
+def test_a_done_m1_without_its_schedule_stops_the_runlist(tmp_path):
+    def runner(args, folder):
+        st = fake_runner(args, folder)
+        if "--llm-stream" in args:
+            (folder / "schedule.ndjson").unlink()   # a fault: done, and no schedule
+        return st
+    items = [{"name": "M1_8B/t01", "args": ["--llm-stream"], "block": 1},
+             {"name": "M1_replay_8B/t01", "args": ["--events", "{out:M1_8B/t01}/schedule.ndjson"], "block": 1,
+              "after": "M1_8B/t01", "needs": ["{out:M1_8B/t01}/schedule.ndjson"],
+              "make": ["works/prototype_v7_plan.py", "gate-m1", "--m1", "{out:M1_8B/t01}"]}]
+    with pytest.raises(RuntimeError, match="make exited"):
+        rl.run(items, [1], tmp_path / "x", runner=runner, maker=in_process_maker, shower=lambda p: None)
+
+
+def test_a_failed_m1_whose_schedule_is_not_its_streams_plan_is_a_fault(tmp_path):
+    d = m1_folder(tmp_path, "interrupted", 25, seed=6)
+    _, presses = ev.read(d / "schedule.ndjson")
+    (d / "schedule.ndjson").unlink()
+    ev.write(d / "schedule.ndjson", ev.make([p["t_ms"] * 1.01 for p in presses], [p["key"] for p in presses]),
+             "M1", "t")
+    with pytest.raises(SystemExit) as e:
+        vp.m1_plan(d)
+    assert e.value.code not in (0, 3)
+
+
+def test_a_done_m1_of_one_press_is_its_plan_but_no_text_for_m0(plan, tmp_path):
+    d = m1_folder(tmp_path, "done", 1, seed=8)
+    keys = vp.m1_plan(d)
+    assert len(keys) == len(vr.read_events(d / "schedule.ndjson").keys)
+    if len(keys) < 2:
+        with pytest.raises(SystemExit) as e:
+            vp.derive("M0", 0, d, plan["out"])
+        assert e.value.code == 3
 
 
 def test_every_llm_item_has_seed_1_and_its_classs_model(plan):
@@ -610,3 +713,69 @@ def test_main_names_the_runs_files_sha256(tmp_path, monkeypatch):
                                       "--block", "1"])
     rl.main()
     assert seen == {"block": 1, "runs_sha": vp.sha256(f)}
+
+
+C6_COPY = json.loads((ROOT / "works/conditions/prototype_v6.json").read_text())["data"]["kupa"]["files"]["copy"]
+
+
+def fake_kupa(plan, tmp_path: Path, monkeypatch) -> vr.Persons:
+    """main_make's KUPA reading, its checks and the git state replaced by synthetic ones (no KUPA on this machine);
+    the SHA-256 checks see the conditions' values."""
+    ps = vr.Persons(pool=[f"p{i}" for i in range(vr.N_H + N_E)], h=[f"p{i}" for i in range(vr.N_H)],
+                    e=[f"p{vr.N_H + i}" for i in range(N_E)], donors=np.array([]), e_train=np.array([]), looked=999)
+    essay = {pid: h for pid, h in zip(ps.h, plan["h0"])}
+    essay.update({pid: {"times": np.concatenate([[0.0], np.cumsum(g)])} for pid, g in zip(ps.e, plan["e_gaps"])})
+    monkeypatch.setattr(vp, "git_clean_commit", lambda: "f" * 40)
+    monkeypatch.setattr(vp, "ROOT", tmp_path)
+    for f in ("external/kupa-keys/KUPA-KEYS-TASK-2.csv", "external/kupa-keys/KUPA-KEYS-META.csv", C6_COPY["file"]):
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text("")
+    kp = C7["data"]["kupa"]
+    want = {"KUPA-KEYS-TASK-2.csv": vr.kp_sha(kp, "essay"), "KUPA-KEYS-META.csv": vr.kp_sha(kp, "meta"),
+            Path(C6_COPY["file"]).name: C6_COPY["sha256"]}
+    monkeypatch.setattr(vr.cm, "sha256", lambda path: want[Path(path).name])
+    monkeypatch.setattr(vr.cm, "load_conditions", lambda path: (b"conditions", C7) if path == vr.COND
+                        else (b"v6", json.loads(Path(path).read_text())))
+    monkeypatch.setattr(v6, "read_kupa", lambda path: (essay, set(essay)))
+    monkeypatch.setattr(vr, "draw_persons", lambda e, c, seen, sha: ps)
+    monkeypatch.setattr(vp, "read_kupa_keys", lambda path, ids: {pid: hk for pid, hk in zip(ps.h, plan["hs"])})
+    monkeypatch.setattr(vp, "kupa_prompts", lambda path: prompts()[:10])
+    return ps
+
+
+def test_main_make_writes_the_manifest_the_analysis_reads(plan, captured, tmp_path, monkeypatch):
+    import hashlib
+    ps = fake_kupa(plan, tmp_path, monkeypatch)
+    out = tmp_path / "made"
+    vp.main_make(out)
+    got = vr.read_plan(out, logs_with_runs_sha(captured, tmp_path, vp.sha256(out / "runs.json")), ps,
+                       hashlib.sha256(b"conditions").hexdigest())
+    assert got["replaced_keys_H"] == plan["man"]["replaced_keys_H"]
+    man = json.loads((out / "manifest.json").read_text())
+    assert man["git_commit"] == "f" * 40 and man["persons"]["ids_looked_at"] == 999
+    assert not any(f'"{pid}"' in (out / "manifest.json").read_text() for pid in ps.pool)
+
+
+def logs_with_runs_sha(captured, tmp_path: Path, sha: str) -> Path:
+    d = logs_copy(captured, tmp_path / "logs-sha")
+    for g in d.glob("runlog*.ndjson"):
+        r = g.read_text().splitlines()
+        g.write_text("\n".join([json.dumps({**json.loads(r[0]), "runs_sha256": sha})] + r[1:]) + "\n")
+    return d
+
+
+def test_main_make_leaves_no_folder_when_it_fails(plan, tmp_path, monkeypatch):
+    fake_kupa(plan, tmp_path, monkeypatch)
+    monkeypatch.setattr(vp, "persons_record", lambda ps: (_ for _ in ()).throw(RuntimeError("disk full")))
+    out = tmp_path / "made"
+    with pytest.raises(RuntimeError, match="disk full"):
+        vp.main_make(out)
+    assert not out.exists()
+
+
+def test_main_make_stops_on_a_kupa_file_of_another_sha(plan, tmp_path, monkeypatch):
+    fake_kupa(plan, tmp_path, monkeypatch)
+    monkeypatch.setattr(vr.cm, "sha256", lambda path: "0" * 64)
+    with pytest.raises(SystemExit, match="does not match"):
+        vp.main_make(tmp_path / "made")
+    assert not (tmp_path / "made").exists()

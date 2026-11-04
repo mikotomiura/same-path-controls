@@ -378,8 +378,9 @@ def runlog_headers(root: Path) -> list[dict]:
         h = rows[0]
         if h.get("key") != RUN_KEY:
             raise RunStop(f"{f}: the run key is {h.get('key')}, not {RUN_KEY} (run_order.randomised)")
-        if len(files) > 1 and (h.get("block") != b or not isinstance(h.get("runs_sha256"), str)):
-            raise RunStop(f"{f}: the header does not name block {b} and the runs.json it ran")
+        want_block = b if len(files) > 1 else None
+        if h.get("block") != want_block or not isinstance(h.get("runs_sha256"), str):
+            raise RunStop(f"{f}: the header does not name block {want_block} and the runs.json it ran")
         heads.append(h)
     if len({h.get("runs_sha256") for h in heads}) != 1:
         raise RunStop("the blocks were run from different runs.json files")
@@ -1500,7 +1501,7 @@ def main(argv: list[str] | None = None) -> None:
     h0 = [{"times": essay[p]["times"], "kinds": essay[p]["kinds"]} for p in ps.h]
     e_gaps = [v7.gaps_of(essay[p]["times"]) for p in ps.e]
     caps = load_all(captures)
-    plan_rec = read_plan(plan_dir, runlog_headers(captures), ps)
+    plan_rec = read_plan(plan_dir, captures, ps, hashlib.sha256(raw).hexdigest())
     tmp = Path(tempfile.mkdtemp(prefix="prototype_v7-", dir=OUT_DIR.parent))
     try:
         rec = run(c, h0, e_gaps, ps.e_train, caps, c4["mapping"], c4["relief"])
@@ -1526,22 +1527,41 @@ def main(argv: list[str] | None = None) -> None:
     print(json.dumps(to_json(rec["predictions"])))
 
 
-def read_plan(plan_dir: Path, heads: list[dict], ps: Persons) -> dict:
-    """The plan the captures ran (amendment B16): its manifest.json holds runs.json's SHA-256, which every runlog
-    header must name (per-block runs), and the replay persons' SHA-256, which must be this run's; the number of
-    replaced keys of H1 (series.H1_idle, B16) is recorded from it."""
+def read_plan(plan_dir: Path, captures: Path, ps: Persons, conditions_sha: str) -> dict:
+    """The plan the captures ran (amendment B16), checked before any value: every file of the plan is the one of its
+    manifest.json; the manifest was made from these conditions and these replay persons; every runlog header names
+    its runs.json; and each runlog holds exactly the items of its block (all blocks for one runlog.ndjson), in the
+    order capture.runlist.order draws with the run key. The number of replaced keys of H1 (series.H1_idle, B16) is
+    recorded from the manifest."""
+    sys.path.insert(0, str(ROOT))
+    from capture import runlist as rl
     man = json.loads((plan_dir / "manifest.json").read_text(encoding="utf-8"))
-    runs_sha = hashlib.sha256((plan_dir / "runs.json").read_bytes()).hexdigest()
-    if man["files_sha256"].get("runs.json") != runs_sha:
-        raise RunStop("the plan's runs.json is not the one of its manifest")
-    named = {h.get("runs_sha256") for h in heads} - {None}
-    if named and named != {runs_sha}:
-        raise RunStop("the captures were run from another runs.json than this plan's")
+    files = sorted(p.relative_to(plan_dir).as_posix() for p in plan_dir.rglob("*") if p.is_file())
+    if sorted(man["files_sha256"]) != sorted(set(files) - {"manifest.json"}):
+        raise RunStop("the plan's files are not the ones of its manifest")
+    for rel, sha in man["files_sha256"].items():
+        if hashlib.sha256((plan_dir / rel).read_bytes()).hexdigest() != sha:
+            raise RunStop(f"the plan's {rel} is not the one of its manifest")
+    if man.get("conditions_sha256") != conditions_sha:
+        raise RunStop("the plan was made from other conditions than these")
     if man["persons"]["replay_H_sha256"] != sha_ids(ps.h):
         raise RunStop("the plan's replay persons are not this run's")
-    return {"runs_sha256": runs_sha, "replaced_keys_H": man["replaced_keys_H"], "n_items": man["n_items"],
-            "items_per_block": man["items_per_block"], "plan_git_commit": man.get("git_commit"),
-            "plan_code_sha256": man.get("plan_code_sha256")}
+    runs_sha = man["files_sha256"]["runs.json"]
+    if {h["runs_sha256"] for h in runlog_headers(captures)} != {runs_sha}:
+        raise RunStop("the captures were run from another runs.json than this plan's")
+    items = json.loads((plan_dir / "runs.json").read_text(encoding="utf-8"))
+    seq, _ = rl.order(items, RUN_KEY)
+    logs = runlog_files(captures)
+    for f in logs:
+        rows = read_ndjson(f)
+        block = rows[0].get("block")
+        want = [it["name"] for it in seq if block is None or it["block"] == block]
+        got = [r.get("item") for r in rows[1:-1]]
+        if rows[0].get("order") != want or got != want:
+            raise RunStop(f"{f.name}: its items or their order are not the plan's {'blocks' if block is None else 'block ' + str(block)}")
+    return {"runs_sha256": runs_sha, "conditions_sha256": conditions_sha, "replaced_keys_H": man["replaced_keys_H"],
+            "n_items": man["n_items"], "items_per_block": man["items_per_block"],
+            "plan_git_commit": man.get("git_commit"), "plan_code_sha256": man.get("plan_code_sha256")}
 
 
 def kp_sha(kp: dict, which: str) -> str:
