@@ -1,0 +1,141 @@
+"""Tests of the M1 causal plan (capture/llm_stream.py, amendment B13) and the M2 plan check (capture/llm_plan.py)."""
+
+import io
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from capture import llm_plan, llm_stream  # noqa: E402
+
+MS = 1_000_000
+
+
+def test_b13_each_token_is_spread_from_the_next_arrival():
+    # tokens at 0, 100, 300 ms, generation ends at 400 ms
+    plan, p = llm_stream.plan_offline([(0, "ab"), (100 * MS, "c"), (300 * MS, "de")], 400 * MS)
+    assert [x["key"] for x in plan] == list("abcde")
+    # token 1 (2 chars) from a2 = 100 over a2 - a1 = 100: 100, 150; token 2 from a3 = 300 over 200: 300;
+    # token 3 from the end 400 over 100: 400, 450
+    assert [x["wished_ms"] for x in plan] == [100, 150, 300, 400, 450]
+    assert [x["plan_ms"] for x in plan] == [100, 150, 300, 400, 450]
+    assert p.k == 3 and p.moved == 0
+
+
+def test_every_character_is_wished_no_earlier_than_it_is_known():
+    plan, _ = llm_stream.plan_offline([(0, "Hello"), (10 * MS, ","), (11 * MS, " world"), (40 * MS, ".")], 60 * MS)
+    known = {1: 10, 2: 11, 3: 40, 4: 60}  # token k is complete when token k+1 arrives (or generation ends)
+    for x in plan:
+        assert x["wished_ms"] >= known[x["token"]]
+
+
+def test_running_maximum_keeps_order_and_equal_times():
+    # a long token followed by quick ones: wished times go backwards, the plan holds at the running maximum
+    plan, p = llm_stream.plan_offline([(0, "abcd"), (100 * MS, "e"), (101 * MS, "f")], 102 * MS)
+    assert [x["wished_ms"] for x in plan] == [100, 125, 150, 175, 101, 102]
+    assert [x["plan_ms"] for x in plan] == [100, 125, 150, 175, 175, 175]
+    assert p.moved == 2 and p.shifts_ms == [74, 73]
+
+
+def test_nfc_code_points_and_empty_tokens():
+    assert llm_stream.n_chars("é") == 1  # e + combining acute is one code point after NFC
+    plan, p = llm_stream.plan_offline([(0, "éx"), (5 * MS, ""), (10 * MS, "y"), (12 * MS, "")], 20 * MS)
+    assert p.empty_tokens == 2
+    # token 1 has 2 code points spread from 10 over 10: the accented e is skipped (not ASCII), x at 15
+    assert [x["key"] for x in plan] == ["x", "y"]
+    assert [x["wished_ms"] for x in plan] == [15, 20]
+    assert p.skipped_chars == 1
+
+
+def test_line_breaks_become_enter_and_crlf_is_one_press():
+    keys, skipped = llm_stream.token_keys("a\r\nb\n")
+    assert keys == ["a", None, "Enter", "b", "Enter"] and skipped == 0
+
+
+class FakeInjector:
+    def __init__(self, cost_ns=0, foreground=1):
+        self.cost = cost_ns
+
+        class U:
+            @staticmethod
+            def GetForegroundWindow():
+                return foreground
+        self.user32 = U()
+
+    def send(self, key):
+        t = time.perf_counter_ns()
+        while time.perf_counter_ns() < t + self.cost:
+            pass
+        return t, time.perf_counter_ns(), 2, 2
+
+
+def test_typist_waits_in_a_queue_and_never_runs_ahead():
+    # five presses planned at the same time, each send takes 3 ms: each waits for the one before
+    ty = llm_stream.Typist(FakeInjector(cost_ns=3 * MS), guard_hwnd=1, stop=None)
+    ty.a1_ns = time.perf_counter_ns() + 20 * MS
+    for _ in range(5):
+        ty.q.put({"key": "a", "wished_ms": 0.0, "plan_ms": 0.0, "token": 1})
+    ty.q.put(None)
+    ty.start()
+    ty.join(5)
+    r = ty.records
+    assert len(r) == 5
+    assert all(x["sent_ns"] >= x["planned_ns"] for x in r)
+    assert all(b["sent_ns"] >= a["returned_ns"] for a, b in zip(r, r[1:]))
+    assert r[-1]["wait_ns"] >= 10 * MS
+    assert r[0]["queue_len"] >= 4
+
+
+def test_typist_stops_when_focus_is_lost():
+    ty = llm_stream.Typist(FakeInjector(foreground=1), guard_hwnd=2, stop=None)
+    ty.a1_ns = time.perf_counter_ns()
+    ty.q.put({"key": "a", "wished_ms": 0.0, "plan_ms": 0.0, "token": 1})
+    ty.q.put(None)
+    ty.start()
+    ty.join(5)
+    assert ty.records == [] and ty.stopped_focus_lost
+
+
+@pytest.mark.parametrize("raw,reason", [
+    ('{"text": "abc", "gaps_ms": [0, 1]}', "len"),
+    ('{"text": "abc", "gaps_ms": [0, -1, 2]}', "negative"),
+    ('{"text": "abc", "gaps_ms": [0, 1e999, 2]}', "finite"),
+    ('{"text": "abc", "gaps_ms": [5, 1, 2]}', "first"),
+    ('{"text": "abc", "gaps_ms": [0, "1", 2]}', "finite"),
+    ('{"text": "abc"}', "object"),
+    ("not json", "JSON"),
+])
+def test_m2_check_rejects(raw, reason):
+    with pytest.raises(ValueError, match=reason):
+        llm_plan.check_plan(raw)
+
+
+def test_m2_check_accepts_and_builds_the_schedule():
+    text, gaps = llm_plan.check_plan('{"text": "a b\\u2014c", "gaps_ms": [0, 100, 50, 30, 20]}')
+    p, skipped = llm_plan.presses_of(text, gaps)
+    assert skipped == 1  # the em dash
+    assert [x["key"] for x in p] == ["a", " ", "b", "c"]
+    assert [x["t_ms"] for x in p] == [0, 100, 150, 200]
+
+
+def test_m2_three_attempts_then_counted_failure():
+    seeds = []
+
+    def gen(body):
+        seeds.append(body["options"]["seed"])
+        return {"response": '{"text": "ab", "gaps_ms": [0]}'}
+
+    log = io.StringIO()
+    r = llm_plan.make_plan("m", "Write.", 7, log, generate=gen)
+    assert not r["ok"] and r["attempts"] == 3 and r["presses"] == []
+    assert seeds == [7, 1007, 2007]
+    assert len(log.getvalue().splitlines()) == 3
+
+
+def test_m2_stops_at_the_first_valid_plan():
+    answers = iter(['{"text": "ab", "gaps_ms": [0]}', '{"text": "ab", "gaps_ms": [0, 80]}'])
+    r = llm_plan.make_plan("m", "Write.", 1, io.StringIO(), generate=lambda b: {"response": next(answers)})
+    assert r["ok"] and r["attempts"] == 2 and [x["t_ms"] for x in r["presses"]] == [0, 80]
