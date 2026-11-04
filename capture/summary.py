@@ -43,7 +43,8 @@ def deviation(layer_times_ms: np.ndarray, plan_ms: np.ndarray) -> dict:
             "abs_max_ms": float(np.max(a))}
 
 
-def hook_presses(recs: list[dict], t_from_ns: int | None = None, injected: bool = True) -> list[dict]:
+def hook_presses(recs: list[dict], t_from_ns: int | None = None, injected: bool = True,
+                 t_to_ns: int | None = None) -> list[dict]:
     out = []
     for r in recs:
         if r.get("type") != "key" or not r["down"] or r.get("repeat") or r["kind"] not in PRESS_KINDS:
@@ -53,6 +54,8 @@ def hook_presses(recs: list[dict], t_from_ns: int | None = None, injected: bool 
         if not injected and r["injected"]:
             continue
         if t_from_ns is not None and r["t_ns"] < t_from_ns:
+            continue
+        if t_to_ns is not None and r["t_ns"] > t_to_ns:
             continue
         out.append(r)
     return out
@@ -76,6 +79,51 @@ def layer(times_ms: np.ndarray, kinds: list[str], plan_ms: np.ndarray, plan_kind
     return out
 
 
+def uncovered_ms(t0: int, t1: int, spans: list[tuple[int, int]]) -> float:
+    """Milliseconds of [t0, t1] (ns) inside no span (ns): the typing time with no background generation running."""
+    covered, cur = 0, t0
+    for a, b in sorted(spans):
+        a, b = max(a, cur), min(b, t1)
+        if b > a:
+            covered += b - a
+            cur = b
+    return (t1 - t0 - covered) / 1e6
+
+
+# The longest typing time without a background generation that a load capture may have (restarts take a request to
+# ollama, a few ms to a few hundred ms). Not in the conditions or the spec: a technical bound (review of 2026-11-04).
+LOAD_UNCOVERED_MAX_MS = 1000.0
+
+
+def problems(s: dict, meta: dict) -> dict:
+    """What makes a finished capture unusable as it stands, so that it ends 'interrupted' and is redone once
+    (conditions run_order.logged: 'a capture interrupted or restarted is redone once and counted'). Drops and extras
+    are not problems: they are counted results of the path. Empty when there is none."""
+    out: dict = {}
+    planned = s.get("planned", 0) if meta.get("mode") != "live" else None
+    if meta.get("hook_installed", True):
+        n = (s.get("hook") or {}).get("n", 0)
+        if n == 0 and (planned or meta.get("mode") == "live"):
+            out["hook_recorded_nothing"] = True
+    n_page = (s.get("page") or {}).get("n", 0)
+    if n_page == 0 and (planned or meta.get("mode") == "live"):
+        out["page_recorded_nothing"] = True
+    if meta.get("page_opens", 1) > 1:
+        out["page_reloaded"] = meta["page_opens"]
+    if (s.get("page") or {}).get("not_in_box", 0) > 0:
+        out["presses_outside_the_box"] = s["page"]["not_in_box"]
+    if meta.get("load"):
+        ld = s.get("load")
+        if not ld:
+            out["load_recorded_nothing"] = True
+        else:
+            if ld.get("errors_during_typing"):
+                out["load_errors"] = ld["errors_during_typing"]
+            if ld.get("uncovered_ms", 0.0) > LOAD_UNCOVERED_MAX_MS:
+                out["load_uncovered_ms"] = ld["uncovered_ms"]
+    return out
+
+
 def summarize(out: Path) -> dict:
     out = Path(out)
     meta = json.loads((out / "meta.json").read_text(encoding="utf-8")) if (out / "meta.json").exists() else {}
@@ -85,10 +133,13 @@ def summarize(out: Path) -> dict:
     s: dict = {"mode": meta.get("mode"), "status": meta.get("status")}
 
     if meta.get("mode") == "live":
-        hp = hook_presses(hook, injected=False)
+        # only the presses between the signal and the end chord (the Enter that readies the page and any press before
+        # the signal are not part of L0: review of 2026-11-04); the page records only once armed
+        hp = hook_presses(hook, injected=False, t_from_ns=meta.get("typing_start_perf_ns"),
+                          t_to_ns=meta.get("typing_end_perf_ns"))
         pp = page_presses(page)
         s["hook"] = {"n": len(hp)}
-        s["page"] = {"n": len(pp)}
+        s["page"] = {"n": len(pp), "not_in_box": sum(not r.get("in_box", True) for r in pp)}
         s["kinds_equal_hook_page"] = [r["kind"] for r in hp] == [r["kind"] for r in pp]
         return s
 
@@ -125,7 +176,7 @@ def summarize(out: Path) -> dict:
 
     mon = _ndjson(out / "monitor.ndjson")
     t0, t1 = meta.get("typing_start_perf_ns"), meta.get("typing_end_perf_ns")
-    if mon and t0 and t1:
+    if mon and t0 is not None and t1 is not None:
         g = [m["gpu_util"] for m in mon if m.get("src") == "gpu" and "gpu_util" in m and t0 <= m["perf_ns"] <= t1]
         c = [m["cpu_util"] for m in mon if m.get("src") == "cpu" and t0 <= m["perf_ns"] <= t1]
         temp = [m["gpu_temp"] for m in mon if m.get("src") == "gpu" and "gpu_temp" in m and t0 <= m["perf_ns"] <= t1]
@@ -136,9 +187,18 @@ def summarize(out: Path) -> dict:
     if load:
         gens = [r for r in load if r.get("type") == "generation"]
         s["load"] = {"generations": len(gens), "restarts": max(len(gens) - 1, 0),
-                     "completed": sum(r["completed"] for r in gens)}
-        if t0 and t1:  # restarts while presses were typed: generations that began inside the typing
+                     "completed": sum(r["completed"] for r in gens),
+                     "errors": [r["error"] for r in load if r.get("type") == "error"]}
+        if t0 is not None and t1 is not None:  # restarts while presses were typed: generations that began inside the typing
             s["load"]["restarts_during_typing"] = sum(t0 <= r["start_perf_ns"] <= t1 for r in gens)
+            # an error at or before the typing's end failed the load while it mattered; a later one is only reported
+            s["load"]["errors_during_typing"] = [r["error"] for r in load
+                                                 if r.get("type") == "error" and r["perf_ns"] <= t1]
+            ended = {r["n"] for r in gens}
+            running = [(r["start_perf_ns"], t1) for r in load if r.get("type") == "start" and r["n"] not in ended
+                       and not s["load"]["errors"]]  # a generation started and not ended yet runs past t1
+            s["load"]["uncovered_ms"] = uncovered_ms(
+                t0, t1, [(r["start_perf_ns"], r["end_perf_ns"]) for r in gens] + running)
     for k in ("llm_stream", "llm_plan"):
         if k in meta:
             s[k] = meta[k]

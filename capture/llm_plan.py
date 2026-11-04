@@ -96,11 +96,13 @@ def make_plan(model: str, essay_prompt: str, seed: int, llm_log, generate=None) 
                **{k: v for k, v in ans.items() if k not in ("response", "context")}}
         try:
             text, gaps = check_plan(raw)
+            presses, skipped = presses_of(text, gaps)
+            if not presses:  # a plan of untypable characters only types nothing: a failed attempt (review 2026-11-04)
+                raise ValueError(f"no typable character ({skipped} skipped)")
         except ValueError as e:
             failures.append(str(e))
             llm_log.write(json.dumps({**rec, "ok": False, "reason": str(e)}) + "\n")
             continue
         llm_log.write(json.dumps({**rec, "ok": True}) + "\n")
-        presses, skipped = presses_of(text, gaps)
         return {"ok": True, "attempts": a + 1, "failures": failures, "presses": presses, "skipped_chars": skipped}
     return {"ok": False, "attempts": MAX_ATTEMPTS, "failures": failures, "presses": [], "skipped_chars": 0}

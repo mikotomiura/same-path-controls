@@ -42,6 +42,10 @@ ALT = {0x12, 0xA4, 0xA5}
 WIN = {0x5B, 0x5C}
 MODIFIERS = SHIFT | CTRL | ALT | WIN | {0x14}  # Caps Lock counted as a modifier
 KEEP_VK = {VK_RETURN, VK_BACK, VK_DELETE, VK_ESCAPE} | MODIFIERS
+# The numeric keypad (NumLock on): VkKeyScanW maps characters to the main keys only, so these are added here so that
+# the hook gives the kind the page gives ('7' alnum, '.' end, '+' other: review of 2026-11-04). VK_DECIMAL is '.' on
+# the layouts in use (Japanese, US).
+NUMPAD = {**{0x60 + d: str(d) for d in range(10)}, 0x6A: "*", 0x6B: "+", 0x6D: "-", 0x6E: ".", 0x6F: "/"}
 EXTRA_MARK = 0x7A7A0007  # inject.EXTRA_MARK (not imported: inject loads Windows-only libraries at import)
 
 
@@ -83,6 +87,8 @@ def classify(raw: list[tuple], table: dict[tuple[int, bool], str]) -> list[dict]
             kind = events.kind_of_char(c) if c.isprintable() or c in "\r\n" else "nonchar"
         elif ctrl_alt:
             kind = "nonchar"
+        elif vk in NUMPAD:
+            kind = events.kind_of_char(NUMPAD[vk])
         else:
             c = table.get((vk, shift))
             kind = events.kind_of_char(c) if c is not None else "nonchar"

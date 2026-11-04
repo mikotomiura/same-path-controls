@@ -186,15 +186,21 @@ def lognormal_series(text: str, median_ms: float, sigma: float, seed: int, rest_
     return from_gaps(keys, g)
 
 
-def from_live(hook_records: list[dict]) -> tuple[list[dict], dict]:
-    """L1 from L0's hook records: the non-injected, non-repeated key downs of a counted kind, each typed as the key that
-    stands for its kind (LIVE_KEY). Returns the schedule and counts of what was left out."""
+def from_live(hook_records: list[dict], t_from_ns: int | None = None,
+              t_to_ns: int | None = None) -> tuple[list[dict], dict]:
+    """L1 from L0's hook records: the non-injected, non-repeated key downs of a counted kind between the signal and the
+    end chord (t_from_ns..t_to_ns: the Enter that readies the page and presses before the signal are not L0, review
+    of 2026-11-04), each typed as the key that stands for its kind (LIVE_KEY). Stable-sorted by time, and a press at
+    the same time as the previous one dropped and counted (v6's rule, as the analysis cleans L0's hook layer:
+    prototype_v7.clean_times). Returns the schedule and counts of what was left out."""
     times, keys = [], []
-    left = {"injected": 0, "repeat": 0, "up": 0, "modifier": 0, "nonchar": 0}
+    left = {"injected": 0, "repeat": 0, "up": 0, "modifier": 0, "nonchar": 0, "outside_window": 0}
     for r in hook_records:
         if r.get("type") != "key":
             continue
-        if not r["down"]:
+        if (t_from_ns is not None and r["t_ns"] < t_from_ns) or (t_to_ns is not None and r["t_ns"] > t_to_ns):
+            left["outside_window"] += 1
+        elif not r["down"]:
             left["up"] += 1
         elif r["injected"]:
             left["injected"] += 1
@@ -209,6 +215,10 @@ def from_live(hook_records: list[dict]) -> tuple[list[dict], dict]:
     left["reordered"] = int(np.sum(order != np.arange(len(order))))
     times = [times[i] for i in order]
     keys = [keys[i] for i in order]
+    keep = [i == 0 or times[i] > times[i - 1] for i in range(len(times))]
+    left["tie"] = keep.count(False)
+    times = [x for x, k in zip(times, keep) if k]
+    keys = [x for x, k in zip(keys, keep) if k]
     return make(times, keys), left
 
 

@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __package__ in (None, ""):
     sys.path.insert(0, str(ROOT))
 
-from capture import events, summary  # noqa: E402
+from capture import events, hooklog, summary  # noqa: E402
 
 PY = sys.executable
 INTERRUPTED = 3
@@ -251,6 +251,13 @@ def main(argv=None) -> int:
         header, presses = events.read(a.events)
         events.write(out / "events.ndjson", presses, header.get("series", ""), header.get("source", ""),
                      copied_from=str(a.events))
+        src_meta = Path(a.events).parent / "meta.json"
+        if src_meta.exists():  # an M2 redone by the runlist: the plan's record of the first attempt (review 2026-11-04)
+            sm = json.loads(src_meta.read_text(encoding="utf-8"))
+            if "llm_plan" in sm:
+                meta["plan_from"] = {"folder": str(Path(a.events).parent), "mode": sm.get("mode"),
+                                     "llm_plan": sm["llm_plan"],
+                                     "ollama_ps_before_capture": sm.get("ollama_ps_before_capture")}
     if a.llm_stream or a.llm_plan:
         task = a.prompt_file.read_text(encoding="utf-8").strip()
         llm_log = open(out / "llm.ndjson", "x", encoding="utf-8", newline="\n")
@@ -341,7 +348,8 @@ def main(argv=None) -> int:
             with open(out / "inject.ndjson", "x", encoding="utf-8", newline="\n") as f:
                 for r in res["records"]:
                     f.write(json.dumps(r) + "\n")
-            if c["stopped_by_esc"] or c["stopped_focus_lost"] or c["typed"] < c["planned"] or c["not_sent"]:
+            if c["stopped_by_esc"] or c["stopped_focus_lost"] or c["typed"] < c["planned"] or c["not_sent"] or \
+                    c["planned"] == 0:  # nothing typable: no capture (as M2's plan of no typable character)
                 interrupted = {k: c[k] for k in ("stopped_by_esc", "stopped_focus_lost", "typed", "planned",
                                                  "not_sent")}
             if not c["generation_done"]:
@@ -369,9 +377,25 @@ def main(argv=None) -> int:
         page.wait("log", n_log + 1, 30)
         meta["page_opens"] = page.state()["counts"]["open"]
         meta["restarts"]["page"] = "reloaded during the capture" if meta["page_opens"] > 1 else "not reloaded"
+        if hook is not None:  # the hook writes hook.ndjson only when it stops: stopped here, before the checks read it
+            h, hook = hook, None
+            h.stop()
+        # checks after the capture (review of 2026-11-04): a logger that recorded nothing, a reloaded page, presses
+        # outside the box or a load that stopped make the capture 'interrupted' (redone once by the runlist). The load
+        # file is read while the load still runs: its finished generations are flushed line by line.
+        save_meta()
+        after = summary.problems(summary.summarize(out), meta)
+        meta["checks_after"] = after
+        if after:
+            interrupted = {**(interrupted or {}), "checks_after": after}
         meta["status"] = "interrupted" if interrupted else "done"
         if interrupted:
             meta["interrupted"] = interrupted
+        if a.live and meta["status"] == "done":  # L1's plan: runs.json gives L1 --events {out:L0/eN}/l1_events.ndjson
+            l1, left = events.from_live(hooklog.read(out / "hook.ndjson"), meta["typing_start_perf_ns"],
+                                        meta["typing_end_perf_ns"])
+            events.write(out / "l1_events.ndjson", l1, "L1", "from_live of this L0's hook.ndjson", left_out=left)
+            meta["l1_events"] = {"n": len(l1), "left_out": left}
     except BaseException as e:
         meta["status"] = "failed"
         meta["error"] = f"{type(e).__name__}: {e}"

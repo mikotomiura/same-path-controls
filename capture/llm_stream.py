@@ -131,6 +131,7 @@ class Typist(threading.Thread):
         self.stopped_by_esc = False
         self.stopped_focus_lost = False
         self.error: BaseException | None = None
+        self.abort = threading.Event()  # set by run() when the stream fails: nothing more is typed
 
     def run(self):
         from capture.inject import wait_until
@@ -144,6 +145,8 @@ class Typist(threading.Thread):
                 qlen = self.q.qsize()
                 planned = self.a1_ns + round(item["plan_ms"] * 1e6)
                 wait_until(planned)
+                if self.abort.is_set():
+                    return
                 if self.stop_flag is not None and self.stop_flag.is_set():
                     self.stopped_by_esc = True
                     return
@@ -175,25 +178,35 @@ def run(model: str, prompt: str, seed: int, method: str, guard_hwnd: int | None,
     final = None
     with inj:
         typist.start()
-        with ollama.open_stream(body) as r:
-            for k, line in enumerate(r):
-                t = time.perf_counter_ns()
-                d = json.loads(line)
-                tok = d.get("response", "")
-                llm_log.write(json.dumps({"type": "chunk", "n": k, "recv_ns": t, "token": tok,
-                                          "n_chars": n_chars(tok), "done": bool(d.get("done"))}) + "\n")
-                if d.get("done"):
-                    final = {kk: v for kk, v in d.items() if kk not in ("response", "context")}
-                    new = planner.finish(t)
-                else:
-                    new = planner.feed(t, tok)
-                    if typist.a1_ns is None and planner.a1_ns is not None:
+        try:
+            with ollama.open_stream(body) as r:
+                for k, line in enumerate(r):
+                    t = time.perf_counter_ns()
+                    d = json.loads(line)
+                    if "error" in d:  # ollama's error line: the generation failed (never counted as an empty token)
+                        llm_log.write(json.dumps({"type": "error", "n": k, "recv_ns": t, "error": d["error"]}) + "\n")
+                        raise RuntimeError(f"ollama: {d['error']}")
+                    tok = d.get("response", "")
+                    llm_log.write(json.dumps({"type": "chunk", "n": k, "recv_ns": t, "token": tok,
+                                              "n_chars": n_chars(tok), "done": bool(d.get("done"))}) + "\n")
+                    if d.get("done"):
+                        final = {kk: v for kk, v in d.items() if kk not in ("response", "context")}
+                        # a final line that also carries text: its token arrives at t and ends at t (spread over 0 ms)
+                        new = planner.feed(t, tok) + planner.finish(t) if n_chars(tok) else planner.finish(t)
+                    else:
+                        new = planner.feed(t, tok)
+                    if typist.a1_ns is None and planner.a1_ns is not None:  # also when the only text is on the done line
                         typist.a1_ns = planner.a1_ns
-                for x in new:
-                    typist.q.put(x)
-                plan += new
-                if d.get("done") or not typist.is_alive():
-                    break
+                    for x in new:
+                        typist.q.put(x)
+                    plan += new
+                    if d.get("done") or not typist.is_alive():
+                        break
+        except BaseException:
+            typist.abort.set()  # the stream failed: the queued presses are not typed (review of 2026-11-04)
+            typist.q.put(None)
+            typist.join(5)
+            raise
         typist.q.put(None)
         typist.join()
     llm_log.write(json.dumps({"type": "final", **(final or {})}) + "\n")

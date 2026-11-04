@@ -107,7 +107,25 @@ def test_from_live_keys_times_and_what_is_left_out():
     p, left = events.from_live(recs)
     assert [x["key"] for x in p] == ["e", ",", " ", ".", "Enter", "Backspace", "Delete"]
     assert [x["t_ms"] for x in p] == [0, 200, 300, 400, 500, 600, 700]
-    assert left == {"injected": 1, "repeat": 1, "up": 1, "modifier": 1, "nonchar": 1, "reordered": 0}
+    assert left == {"injected": 1, "repeat": 1, "up": 1, "modifier": 1, "nonchar": 1, "outside_window": 0,
+                    "reordered": 0, "tie": 0}
+
+
+def test_from_live_takes_only_the_window_between_signal_and_end():
+    # the Enter that readies the page (t 500) and a press during the signal (t 900) come before typing_start (1000);
+    # the end chord's keys come after typing_end (2000)
+    recs = [hook_rec(500, "enter"), hook_rec(900, "alnum"), hook_rec(1000, "alnum"), hook_rec(1500, "space"),
+            hook_rec(2000, "alnum"), hook_rec(2100, "alnum")]
+    p, left = events.from_live(recs, int(1000e6), int(2000e6))
+    assert [x["key"] for x in p] == ["e", " ", "e"] and [x["t_ms"] for x in p] == [0, 500, 1000]
+    assert left["outside_window"] == 3
+
+
+def test_from_live_drops_a_press_at_the_same_time_and_counts_it():
+    recs = [hook_rec(1000, "alnum"), hook_rec(1200, "space"), hook_rec(1100, "alnum"), hook_rec(1200, "alnum")]
+    p, left = events.from_live(recs)
+    assert [x["t_ms"] for x in p] == [0, 100, 200] and [x["key"] for x in p] == ["e", "e", " "]
+    assert left["tie"] == 1 and left["reordered"] > 0
 
 
 def test_from_live_keeps_no_character():

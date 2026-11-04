@@ -139,3 +139,79 @@ def test_m2_stops_at_the_first_valid_plan():
     answers = iter(['{"text": "ab", "gaps_ms": [0]}', '{"text": "ab", "gaps_ms": [0, 80]}'])
     r = llm_plan.make_plan("m", "Write.", 1, io.StringIO(), generate=lambda b: {"response": next(answers)})
     assert r["ok"] and r["attempts"] == 2 and [x["t_ms"] for x in r["presses"]] == [0, 80]
+
+
+def test_m2_plan_of_untypable_characters_only_is_a_failed_attempt():
+    answers = iter(['{"text": "\\u2014\\u2019", "gaps_ms": [0, 10]}', '{"text": "ab", "gaps_ms": [0, 80]}'])
+    log = io.StringIO()
+    r = llm_plan.make_plan("m", "Write.", 1, log, generate=lambda b: {"response": next(answers)})
+    assert r["ok"] and r["attempts"] == 2 and r["failures"] == ["no typable character (2 skipped)"]
+    assert '"ok": false' in log.getvalue().splitlines()[0]
+
+
+class FakeStream:
+    def __init__(self, lines):
+        self.lines = lines
+
+    def __enter__(self):
+        return iter(self.lines)
+
+    def __exit__(self, *a):
+        return False
+
+
+def run_m1(monkeypatch, lines, sent=None, wait_s=0.0):
+    """llm_stream.run with a fake injector module and a fake ollama stream (no Windows, no model). sent collects the
+    keys typed; wait_s is how long each wait for a planned time takes."""
+    import json
+    import types
+    fake = types.ModuleType("capture.inject")
+
+    class Inj(FakeInjector):
+        def __init__(self, method):
+            super().__init__()
+
+        def send(self, key):
+            if sent is not None:
+                sent.append(key)
+            return super().send(key)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    fake.Injector = Inj
+    fake.wait_until = lambda t: time.sleep(wait_s)
+    monkeypatch.setitem(sys.modules, "capture.inject", fake)
+    from capture import ollama
+    monkeypatch.setattr(ollama, "open_stream", lambda body: FakeStream([json.dumps(x).encode() for x in lines]))
+    log = io.StringIO()
+    return llm_stream.run("m", "Write.", 1, "unicode", None, None, log), log.getvalue()
+
+
+def test_m1_final_line_with_text_is_typed(monkeypatch):
+    res, _ = run_m1(monkeypatch, [{"response": "ab", "done": False}, {"response": "c", "done": True}])
+    assert [x["key"] for x in res["plan"]] == ["a", "b", "c"]
+    assert res["counts"]["generation_done"] and res["counts"]["typed"] == 3
+
+
+def test_m1_ollama_error_line_fails_the_capture(monkeypatch):
+    with pytest.raises(RuntimeError, match="ollama: model failed"):
+        run_m1(monkeypatch, [{"response": "ab", "done": False}, {"error": "model failed"}])
+
+
+def test_m1_only_text_on_the_done_line_is_typed(monkeypatch):
+    res, _ = run_m1(monkeypatch, [{"response": "", "done": False}, {"response": "hi", "done": True}])
+    assert [x["key"] for x in res["plan"]] == ["h", "i"] and res["counts"]["typed"] == 2
+    assert res["counts"]["not_sent"] == 0
+
+
+def test_m1_stream_failure_stops_the_typist_before_raising(monkeypatch):
+    sent = []
+    with pytest.raises(RuntimeError, match="ollama: gone"):
+        # 'def' releases 'abc' to the typist, whose wait takes 0.3 s; the error line comes at once
+        run_m1(monkeypatch, [{"response": "abc", "done": False}, {"response": "def", "done": False},
+                             {"error": "gone"}], sent=sent, wait_s=0.3)
+    time.sleep(1.2)  # long enough for a typist that was not stopped to type the three queued presses
+    assert sent == []
