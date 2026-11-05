@@ -371,15 +371,58 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
     return results
 
 
+def set_aside(items: list[dict], out: Path, block: int, runs_sha: str, now: str | None = None) -> Path:
+    """Move a stopped block aside so that it can be run again (the researcher's decision 12 of
+    .steering/20261104-v7-prep-v3-returns): its runlog (one that did not finish: a finished block is refused) and the
+    folders of its items (and their .try1) go to out/stopped-<utc>/ at the same relative paths. Nothing is deleted;
+    set_aside.json lists what moved. The moved captures are never read by the analysis (it reads the runlogs' folders)
+    and are reported as a deviation."""
+    out = Path(out).resolve()
+    log = out / f"runlog.b{block}.ndjson"
+    if not log.exists():
+        raise ValueError(f"{log} does not exist: block {block} has not run, nothing to set aside")
+    rows = [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if rows and rows[-1].get("type") == "footer":
+        raise ValueError(f"{log} finished (it has a footer): a finished block is never set aside")
+    if rows and rows[0].get("type") == "header" and rows[0].get("runs_sha256") != runs_sha:
+        raise ValueError(f"{log} was run with another runs.json: ask before going on")
+    names = [it["name"] for it in items if it["block"] == block]
+    if not names:
+        raise ValueError(f"no item in block {block}")
+    stamp = now or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = out / f"stopped-{stamp}"
+    dest.mkdir(exist_ok=False)
+    moved = []
+    for src in [log] + [f for n in names for f in (out / n, out / (n + ".try1"))]:
+        if not src.exists():
+            continue
+        rel = src.relative_to(out)
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        rename(src, dest / rel)
+        moved.append(rel.as_posix())
+    (dest / "set_aside.json").write_text(json.dumps({"block": block, "runs_sha256": runs_sha, "utc": stamp,
+                                                     "moved": moved, "stopped_runlog": rows}, indent=1),
+                                         encoding="utf-8")
+    return dest
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", type=Path, required=True)
     ap.add_argument("--key", type=int, nargs="+", required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--block", type=int)
+    ap.add_argument("--set-aside", action="store_true",
+                    help="move a stopped block's runlog and folders to out/stopped-<utc>/ (then run the block again)")
     a = ap.parse_args()
     raw = a.list.read_bytes()
     items = json.loads(raw.decode("utf-8"))
+    if a.set_aside:
+        if a.block is None:
+            ap.error("--set-aside needs --block (a stopped run of all blocks is run again into a new --out)")
+        dest = set_aside(items, a.out, a.block, hashlib.sha256(raw).hexdigest())
+        print(f"set aside in {dest}; run block {a.block} again with the same command without --set-aside")
+        return 0
     res = run(items, a.key, a.out, block=a.block, runs_sha=hashlib.sha256(raw).hexdigest())
     print(json.dumps(res, indent=1))
     return 0

@@ -465,3 +465,36 @@ def test_capture_stop_finds_no_capture_when_none_holds_the_event():
         assert stop.signal(name) is True and s.is_set() and s.by == "capture.stop"
     finally:
         s.close()
+
+
+def test_a_stopped_block_is_set_aside_and_run_again(tmp_path):
+    """Decision 12: the stopped block's runlog and folders are moved (never deleted), and the block runs again."""
+    its = [{"name": "L0/e0", "args": ["--live"], "after": None, "block": 0},
+           {"name": "P5/c0", "args": [], "after": None, "block": 1},
+           {"name": "L0/e1", "args": ["--live"], "after": None, "block": 1},
+           {"name": "P5/c1", "args": [], "after": None, "block": 1}]
+    out = tmp_path / "run"
+    sha = runlist.runs_sha256(its)
+
+    def ok(args, folder):
+        folder.mkdir(parents=True)
+        return "done"
+    runlist.run(its, [1], out, runner=ok, block=0, remote_check=lambda: [])
+
+    def host_at_l0(args, folder):
+        folder.mkdir(parents=True)
+        return runlist.REMOTE_HOST if folder.name == "e1" else "done"
+    with pytest.raises(RuntimeError, match="the runlist stops here"):
+        runlist.run(its, [1], out, runner=host_at_l0, block=1, remote_check=lambda: [])
+    with pytest.raises(ValueError, match="has run"):  # as before: not run over
+        runlist.run(its, [1], out, runner=ok, block=1, remote_check=lambda: [])
+    with pytest.raises(ValueError, match="finished"):  # a finished block is never set aside
+        runlist.set_aside(its, out, 0, sha)
+    with pytest.raises(ValueError, match="another runs.json"):
+        runlist.set_aside(its, out, 1, "0" * 64)
+    dest = runlist.set_aside(its, out, 1, sha, now="T")
+    rec = json.loads((dest / "set_aside.json").read_text(encoding="utf-8"))
+    assert set(rec["moved"]) == {"runlog.b1.ndjson", "P5/c0", "L0/e1"} and rec["stopped_runlog"][-1]["type"] == "stopped"
+    assert (dest / "L0" / "e1").is_dir() and (out / "L0" / "e0").is_dir()  # block 0 stays
+    res = runlist.run(its, [1], out, runner=ok, block=1, remote_check=lambda: [])
+    assert [r["result"] for r in res] == ["done", "done", "done"]
