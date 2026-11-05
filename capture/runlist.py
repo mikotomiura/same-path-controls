@@ -414,15 +414,25 @@ def set_aside(items: list[dict], out: Path, block: int, runs_sha: str, now: str 
     if rows[-1].get("type") == "footer":
         raise ValueError(f"{log} finished (it has a footer): a finished block is never set aside")
     its = [it for it in items if it["block"] == block]
-    in_log = {r.get("item") for r in rows[1:]}
+    # where each folder came from (round 5): the stopped run made an item's capture folders when it ran its capture (an
+    # item line with attempts, or the item a host stopped), and its plan file when it reached its make (any item line
+    # but a missing dependency, or the item a host stopped); a folder found before its capture (folder_exists) or of an
+    # item the run did not reach came from before the run
+    host_stop = {r.get("item") for r in rows if r.get("type") == "stopped" and r.get("reason") == "remote_host"}
+    captured = {r.get("item") for r in rows if r.get("type") == "item" and r.get("attempts")} | host_stop
+    made = {r.get("item") for r in rows if r.get("type") == "item" and r.get("detail") != "missing_dependency"} \
+        | host_stop
     stamp = now or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = out / f"stopped-{stamp}"
-    todo = [f for it in its for f in (out / it["name"], out / (it["name"] + ".try1"), *made_files(it, out))
-            if f.exists()]
+    todo, origin = [], {}
+    for it in its:
+        n = it["name"]
+        for f, by in ((out / n, captured), (out / (n + ".try1"), captured), *((f, made) for f in made_files(it, out))):
+            if f.exists():
+                todo.append(f)
+                origin[f.relative_to(out).as_posix()] = "stopped_run" if n in by else "before_the_run"
     rel = [f.relative_to(out).as_posix() for f in todo] + [log.name]
-    rec = {"block": block, "runs_sha256": runs_sha, "utc": stamp, "to_move": rel, "moved": [],
-           # an item the stopped runlog names was reached by that run; the others' folders came from before it
-           "items_in_stopped_runlog": sorted(n for n in in_log if n),
+    rec = {"block": block, "runs_sha256": runs_sha, "utc": stamp, "to_move": rel, "moved": [], "origin": origin,
            "stopped_runlog": rows, **({"cut_last_line": cut} if cut is not None else {})}
     dest.mkdir(exist_ok=False)
 

@@ -536,14 +536,9 @@ def test_a_leftover_folder_stops_before_the_make_and_the_show(tmp_path):
     (out / "M0" / "t0").mkdir(parents=True)
     its = [{"name": "M0/t0", "args": [], "after": None, "block": 0, "make": ["x"], "show": "p.txt"}]
     called = []
-    real_mkdir = Path.mkdir
-    Path.mkdir = lambda self, *a, **k: None if self == out.resolve() else real_mkdir(self, *a, **k)
-    try:
-        with pytest.raises(RuntimeError, match="exists before its capture"):
-            runlist.run(its, [1], out, runner=lambda a, f: "done", maker=lambda argv: called.append("make") or 0,
-                        shower=lambda p: called.append("show"))
-    finally:
-        Path.mkdir = real_mkdir
+    with pytest.raises(RuntimeError, match="exists before its capture"):
+        runlist.run(its, [1], out, runner=lambda a, f: "done", maker=lambda argv: called.append("make") or 0,
+                    shower=lambda p: called.append("show"), block=0)
     assert called == []
 
 
@@ -581,7 +576,7 @@ def test_set_aside_moves_the_try1_and_the_derived_plans_and_the_block_runs_again
     assert set(rec["moved"]) == set(rec["to_move"]) == {"M1/t0", "M0/t0", "_derived/M0/t00.ndjson", "x/e0",
                                                         "x/e0.try1", "runlog.b0.ndjson"}
     assert rec["moved"][-1] == "runlog.b0.ndjson"  # the runlog last
-    assert rec["items_in_stopped_runlog"] == ["M0/t0", "M1/t0", "x/e0"]
+    assert set(rec["origin"].values()) == {"stopped_run"} and len(rec["origin"]) == 5
     res = runlist.run(its, [1], out, runner=lambda a, f: f.mkdir(parents=True) or "done", maker=maker,
                       remote_check=lambda: [], block=0)
     assert [r["result"] for r in res] == ["done", "done", "done"]
@@ -625,3 +620,18 @@ def test_set_aside_refuses_a_runlog_without_header_or_of_another_block_and_reads
     log.write_text(json.dumps({"type": "header", "runs_sha256": sha, "block": 0}) + '\n{"type": "ite')
     dest = runlist.set_aside(its, out, 0, sha, now="Y")
     assert json.loads((dest / "set_aside.json").read_text())["cut_last_line"] == '{"type": "ite'
+
+
+def test_set_aside_tells_a_folder_from_before_the_run_from_one_the_run_made(tmp_path):
+    """Round 5: a folder found before its capture (folder_exists) came from before the stopped run."""
+    its = [{"name": "a/e0", "args": [], "after": None, "block": 0}, {"name": "b/e0", "args": [], "after": None,
+                                                                      "block": 0},
+           {"name": "c/e0", "args": [], "after": None, "block": 0}]
+    out = (tmp_path / "run").resolve()
+    (out / "b" / "e0").mkdir(parents=True)
+    (out / "c" / "e0").mkdir(parents=True)  # never reached: also from before
+    with pytest.raises(RuntimeError, match="exists before its capture"):
+        runlist.run(its, [1], out, runner=lambda a, f: f.mkdir(parents=True) or "done", block=0)
+    rec = json.loads((runlist.set_aside(its, out, 0, runlist.runs_sha256(its), now="T") / "set_aside.json")
+                     .read_text(encoding="utf-8"))
+    assert rec["origin"] == {"a/e0": "stopped_run", "b/e0": "before_the_run", "c/e0": "before_the_run"}
