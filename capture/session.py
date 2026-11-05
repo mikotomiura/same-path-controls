@@ -270,6 +270,27 @@ def wait_live(hook, stopper, step_s: float = 0.05) -> dict | None:
             raise RuntimeError(f"the hook ended during the live capture ({hook.p.returncode})")
 
 
+def live_end_check(interrupted: dict | None, meta: dict, running=None) -> dict | None:
+    """At the end of L0, the hosts once more: one still running (or a check that fails) interrupts the capture and
+    marks meta so that the runlist stops, through exit 5 or, if an error comes after, through meta (round 4)."""
+    stop_msg = remote_stop_message(running)
+    if not stop_msg:
+        return interrupted
+    print(stop_msg, file=sys.stderr, flush=True)
+    meta["remote_host_stop"] = True
+    return {**(interrupted or {}), "remote_host_at_end": stop_msg}
+
+
+def exit_code(meta: dict) -> int:
+    """The session's exit code: a host's stop comes before failed (the runlist stops whatever else went wrong)."""
+    from capture import remote
+    if meta.get("remote_host_stop"):
+        return remote.REMOTE_HOST_EXIT
+    if meta["status"] == "failed":
+        return 1
+    return INTERRUPTED if meta["status"] == "interrupted" else 0
+
+
 def main(argv=None) -> int:
     a = parse(argv)
     if sys.platform != "win32":
@@ -459,11 +480,7 @@ def main(argv=None) -> int:
                       flush=True)
             # a host started during L0 and still running: the runlist stops (Codex, round 3); a host started and
             # ended within L0 is seen only by its keys (foreign_injected_key above)
-            stop_msg = remote_stop_message()
-            if stop_msg:
-                print(stop_msg, file=sys.stderr, flush=True)
-                interrupted = {**(interrupted or {}), "remote_host_at_end": stop_msg}
-                meta["remote_host_stop"] = True
+            interrupted = live_end_check(interrupted, meta)
         elif a.llm_stream:
             res = llm_stream.run(a.model, ollama.essay_prompt(task), a.seed, a.inject, hwnd, stop, llm_log)
             c = res["counts"]
@@ -571,11 +588,7 @@ def main(argv=None) -> int:
     s = summary.summarize(out)
     (out / "summary.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
     print(json.dumps(s, indent=1))
-    if meta.get("remote_host_stop"):  # before failed: the runlist stops whatever else went wrong
-        return remote.REMOTE_HOST_EXIT
-    if meta["status"] == "failed":
-        return 1
-    return INTERRUPTED if meta["status"] == "interrupted" else 0
+    return exit_code(meta)
 
 
 if __name__ == "__main__":

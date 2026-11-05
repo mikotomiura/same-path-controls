@@ -166,7 +166,10 @@ def default_runner(args: list[str], out: Path) -> str:
         return REMOTE_HOST
     if not meta.exists():
         return f"failed (exit {r.returncode}, no meta.json)"
-    return json.loads(meta.read_text(encoding="utf-8")).get("status", f"failed (exit {r.returncode})")
+    m = json.loads(meta.read_text(encoding="utf-8"))
+    if m.get("remote_host_stop"):  # a host seen at the end of L0, then an error before exit 5: still a stop (round 4)
+        return REMOTE_HOST
+    return m.get("status", f"failed (exit {r.returncode})")
 
 
 NO_PLAN_EXIT = 3   # works/prototype_v7_plan.py NoPlan
@@ -295,6 +298,14 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
         if dep and dep not in (attempted if "needs" in it else done):
             no_plan(name, "missing_dependency", dependency=dep)
             continue
+        leftover = [f for f in (out / name, out / (name + ".try1")) if f.exists()]
+        if leftover:  # an earlier run's capture (a runlist made again after a stop): never read as this run's; looked
+            # at before the make and the show (code-reviewer round 4)
+            write({"type": "stopped", "item": name, "reason": "folder_exists",
+                   "folders": [f.relative_to(out).as_posix() for f in leftover]})
+            log.close()
+            raise RuntimeError(f"{name}: {', '.join(map(str, leftover))} exists before its capture: an earlier run's "
+                               "folder is never read as this run's (code-reviewer round 3). Ask before going on.")
         if "make" in it:   # before needs: the make (gate-m1, derive) tells a missing plan from a fault
             rc = maker(resolve(it["make"], attempted, out))
             if rc == NO_PLAN_EXIT:
@@ -313,13 +324,6 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
             shower(it["show"])
         attempts = []
         folder = out / name
-        leftover = [f for f in (folder, folder.with_name(folder.name + ".try1")) if f.exists()]
-        if leftover:  # an earlier run's capture (a runlist made again after a stop): never read as this run's
-            write({"type": "stopped", "item": name, "reason": "folder_exists",
-                   "folders": [f.relative_to(out).as_posix() for f in leftover]})
-            log.close()
-            raise RuntimeError(f"{name}: {', '.join(map(str, leftover))} exists before its capture: an earlier run's "
-                               "folder is never read as this run's (code-reviewer round 3). Ask before going on.")
         args = resolve(it["args"], attempted, out)
         detail = "missing_after_redo"
         for a in range(2):
@@ -371,38 +375,65 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
     return results
 
 
+def made_files(it: dict, out: Path) -> list[Path]:
+    """The file an item's make writes under the run's folder ('--out {root}/...', the derived plans of M0 and M3)."""
+    m = it.get("make") or []
+    if "--out" not in m or m.index("--out") + 1 >= len(m):
+        return []
+    x = m[m.index("--out") + 1]
+    return [Path(x.replace("{root}", str(out)))] if x.startswith("{root}") and "{out:" not in x else []
+
+
 def set_aside(items: list[dict], out: Path, block: int, runs_sha: str, now: str | None = None) -> Path:
     """Move a stopped block aside so that it can be run again (the researcher's decision 12 of
-    .steering/20261104-v7-prep-v3-returns): its runlog (one that did not finish: a finished block is refused) and the
-    folders of its items (and their .try1) go to out/stopped-<utc>/ at the same relative paths. Nothing is deleted;
-    set_aside.json lists what moved. The moved captures are never read by the analysis (it reads the runlogs' folders)
-    and are reported as a deviation."""
+    .steering/20261104-v7-prep-v3-returns): the folders of its items (and their .try1), the plan files their makes
+    wrote ('_derived'), then its runlog (one of this runs.json and block that did not finish: a finished block is
+    refused) go to out/stopped-<utc>/ at the same relative paths. Nothing is deleted. set_aside.json is written first
+    with what is to move and rewritten after each move, so that a move that fails leaves a record and the runlog in
+    place: set_aside is then simply called again (round 4). The moved captures are never read by the analysis (it
+    reads the runlogs' folders) and are reported as a deviation."""
     out = Path(out).resolve()
     log = out / f"runlog.b{block}.ndjson"
     if not log.exists():
         raise ValueError(f"{log} does not exist: block {block} has not run, nothing to set aside")
-    rows = [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    if rows and rows[-1].get("type") == "footer":
+    lines = log.read_text(encoding="utf-8").splitlines()
+    rows, cut = [], None
+    for k, ln in enumerate(lines):
+        if not ln.strip():
+            continue
+        try:
+            rows.append(json.loads(ln))
+        except json.JSONDecodeError:
+            if k != len(lines) - 1:
+                raise ValueError(f"{log}: line {k + 1} is not JSON and is not the last: ask before going on")
+            cut = ln  # the last line cut by a power loss: kept in the record
+    if not rows or rows[0].get("type") != "header":
+        raise ValueError(f"{log} has no header line: ask before going on")
+    if rows[0].get("runs_sha256") != runs_sha or rows[0].get("block") != block:
+        raise ValueError(f"{log} was run with another runs.json or block: ask before going on")
+    if rows[-1].get("type") == "footer":
         raise ValueError(f"{log} finished (it has a footer): a finished block is never set aside")
-    if rows and rows[0].get("type") == "header" and rows[0].get("runs_sha256") != runs_sha:
-        raise ValueError(f"{log} was run with another runs.json: ask before going on")
-    names = [it["name"] for it in items if it["block"] == block]
-    if not names:
-        raise ValueError(f"no item in block {block}")
+    its = [it for it in items if it["block"] == block]
+    in_log = {r.get("item") for r in rows[1:]}
     stamp = now or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = out / f"stopped-{stamp}"
+    todo = [f for it in its for f in (out / it["name"], out / (it["name"] + ".try1"), *made_files(it, out))
+            if f.exists()]
+    rel = [f.relative_to(out).as_posix() for f in todo] + [log.name]
+    rec = {"block": block, "runs_sha256": runs_sha, "utc": stamp, "to_move": rel, "moved": [],
+           # an item the stopped runlog names was reached by that run; the others' folders came from before it
+           "items_in_stopped_runlog": sorted(n for n in in_log if n),
+           "stopped_runlog": rows, **({"cut_last_line": cut} if cut is not None else {})}
     dest.mkdir(exist_ok=False)
-    moved = []
-    for src in [log] + [f for n in names for f in (out / n, out / (n + ".try1"))]:
-        if not src.exists():
-            continue
-        rel = src.relative_to(out)
-        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-        rename(src, dest / rel)
-        moved.append(rel.as_posix())
-    (dest / "set_aside.json").write_text(json.dumps({"block": block, "runs_sha256": runs_sha, "utc": stamp,
-                                                     "moved": moved, "stopped_runlog": rows}, indent=1),
-                                         encoding="utf-8")
+
+    def save() -> None:
+        (dest / "set_aside.json").write_text(json.dumps(rec, indent=1), encoding="utf-8")
+    save()
+    for src, r in zip(todo + [log], rel):
+        (dest / r).parent.mkdir(parents=True, exist_ok=True)
+        rename(src, dest / r)
+        rec["moved"].append(r)
+        save()
     return dest
 
 

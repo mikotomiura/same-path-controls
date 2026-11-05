@@ -498,3 +498,130 @@ def test_a_stopped_block_is_set_aside_and_run_again(tmp_path):
     assert (dest / "L0" / "e1").is_dir() and (out / "L0" / "e0").is_dir()  # block 0 stays
     res = runlist.run(its, [1], out, runner=ok, block=1, remote_check=lambda: [])
     assert [r["result"] for r in res] == ["done", "done", "done"]
+
+
+def test_the_end_of_l0_looks_at_the_hosts_and_a_host_s_stop_comes_before_failed():
+    meta = {}
+    assert session.live_end_check(None, meta, lambda: []) is None and meta == {}
+    got = session.live_end_check({"stopped_by": "capture.stop"}, meta, lambda: ["remoting_host.exe"])
+    assert got["stopped_by"] == "capture.stop" and "remoting_host.exe" in got["remote_host_at_end"]
+    assert meta == {"remote_host_stop": True}
+    m2 = {}
+    assert "could not be made" in session.live_end_check(None, m2, lambda: 1 / 0)["remote_host_at_end"]
+    assert session.exit_code({"status": "failed", "remote_host_stop": True}) == remote.REMOTE_HOST_EXIT
+    assert session.exit_code({"status": "failed"}) == 1
+    assert session.exit_code({"status": "interrupted"}) == session.INTERRUPTED
+    assert session.exit_code({"status": "done"}) == 0
+
+
+def test_a_meta_marked_by_a_host_stops_the_runlist_even_after_an_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(runlist.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 1})())
+    out = tmp_path / "c"
+    out.mkdir()
+    (out / "meta.json").write_text('{"status": "failed", "remote_host_stop": true}')
+    assert runlist.default_runner([], out) == runlist.REMOTE_HOST
+
+
+def test_only_the_block_run_is_looked_at_for_live_items(tmp_path):
+    its = [{"name": "L0/e0", "args": ["--live"], "after": None, "block": 0},
+           {"name": "P5/c0", "args": [], "after": None, "block": 1}]
+    out = tmp_path / "run"
+    runlist.run(its, [1], out, runner=lambda a, f: f.mkdir(parents=True) or "done", block=0, remote_check=lambda: [])
+    runlist.run(its, [1], out, runner=lambda a, f: f.mkdir(parents=True) or "done", block=1,
+                remote_check=lambda: 1 / 0)  # block 1 has no live item: no check
+
+
+def test_a_leftover_folder_stops_before_the_make_and_the_show(tmp_path):
+    out = tmp_path / "run"
+    (out / "M0" / "t0").mkdir(parents=True)
+    its = [{"name": "M0/t0", "args": [], "after": None, "block": 0, "make": ["x"], "show": "p.txt"}]
+    called = []
+    real_mkdir = Path.mkdir
+    Path.mkdir = lambda self, *a, **k: None if self == out.resolve() else real_mkdir(self, *a, **k)
+    try:
+        with pytest.raises(RuntimeError, match="exists before its capture"):
+            runlist.run(its, [1], out, runner=lambda a, f: "done", maker=lambda argv: called.append("make") or 0,
+                        shower=lambda p: called.append("show"))
+    finally:
+        Path.mkdir = real_mkdir
+    assert called == []
+
+
+def _stopped_block(tmp_path):
+    """Block 0: M1/t0 done, M0/t0 derived (its make wrote _derived/M0/t00.ndjson), then x redone and stopped."""
+    its = [{"name": "M1/t0", "args": [], "after": None, "block": 0},
+           {"name": "M0/t0", "args": ["--events", "{root}/_derived/M0/t00.ndjson"], "after": "M1/t0", "block": 0,
+            "make": ["works/prototype_v7_plan.py", "derive", "--out", "{root}/_derived/M0/t00.ndjson"]},
+           {"name": "x/e0", "args": ["--live"], "after": None, "block": 0}]
+    out = (tmp_path / "run").resolve()
+    tries = {"n": 0}
+
+    def maker(argv):
+        f = Path(argv[argv.index("--out") + 1])
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.open("x").close()  # as events.write: never over a file
+        return 0
+
+    def runner(args, folder):
+        folder.mkdir(parents=True)
+        if folder.name == "e0":
+            tries["n"] += 1
+            return "interrupted" if tries["n"] == 1 else runlist.REMOTE_HOST
+        return "done"
+    with pytest.raises(RuntimeError, match="the runlist stops here"):
+        runlist.run(its, [1], out, runner=runner, maker=maker, remote_check=lambda: [], block=0)
+    return its, out, maker
+
+
+def test_set_aside_moves_the_try1_and_the_derived_plans_and_the_block_runs_again(tmp_path):
+    its, out, maker = _stopped_block(tmp_path)
+    sha = runlist.runs_sha256(its)
+    dest = runlist.set_aside(its, out, 0, sha, now="T")
+    rec = json.loads((dest / "set_aside.json").read_text(encoding="utf-8"))
+    assert set(rec["moved"]) == set(rec["to_move"]) == {"M1/t0", "M0/t0", "_derived/M0/t00.ndjson", "x/e0",
+                                                        "x/e0.try1", "runlog.b0.ndjson"}
+    assert rec["moved"][-1] == "runlog.b0.ndjson"  # the runlog last
+    assert rec["items_in_stopped_runlog"] == ["M0/t0", "M1/t0", "x/e0"]
+    res = runlist.run(its, [1], out, runner=lambda a, f: f.mkdir(parents=True) or "done", maker=maker,
+                      remote_check=lambda: [], block=0)
+    assert [r["result"] for r in res] == ["done", "done", "done"]
+
+
+def test_a_set_aside_that_fails_midway_keeps_its_record_and_is_called_again(tmp_path, monkeypatch):
+    its, out, _ = _stopped_block(tmp_path)
+    sha = runlist.runs_sha256(its)
+    real = runlist.rename
+    n = {"k": 0}
+
+    def flaky(src, dst, *a, **k):
+        n["k"] += 1
+        if n["k"] == 3:
+            raise PermissionError("held")
+        real(src, dst)
+    monkeypatch.setattr(runlist, "rename", flaky)
+    with pytest.raises(PermissionError):
+        runlist.set_aside(its, out, 0, sha, now="T1")
+    rec = json.loads((out / "stopped-T1" / "set_aside.json").read_text(encoding="utf-8"))
+    assert len(rec["moved"]) == 2 and (out / "runlog.b0.ndjson").exists()  # recorded; the runlog still in place
+    monkeypatch.setattr(runlist, "rename", real)
+    dest = runlist.set_aside(its, out, 0, sha, now="T2")
+    rec2 = json.loads((dest / "set_aside.json").read_text(encoding="utf-8"))
+    assert set(rec["moved"]) | set(rec2["moved"]) == {"M1/t0", "M0/t0", "_derived/M0/t00.ndjson", "x/e0",
+                                                      "x/e0.try1", "runlog.b0.ndjson"}
+
+
+def test_set_aside_refuses_a_runlog_without_header_or_of_another_block_and_reads_a_cut_last_line(tmp_path):
+    its = [{"name": "a", "args": [], "after": None, "block": 0}]
+    sha = runlist.runs_sha256(its)
+    out = tmp_path / "r"
+    out.mkdir()
+    log = out / "runlog.b0.ndjson"
+    for text, msg in (("", "no header"), ('{"type": "item", "item": "a"}\n', "no header"),
+                      (json.dumps({"type": "header", "runs_sha256": sha, "block": 1}) + "\n", "another"),
+                      ('{"type": "header"}\nnot json\n{"type": "stopped"}\n', "not JSON")):
+        log.write_text(text)
+        with pytest.raises(ValueError, match=msg):
+            runlist.set_aside(its, out, 0, sha, now="X")
+    log.write_text(json.dumps({"type": "header", "runs_sha256": sha, "block": 0}) + '\n{"type": "ite')
+    dest = runlist.set_aside(its, out, 0, sha, now="Y")
+    assert json.loads((dest / "set_aside.json").read_text())["cut_last_line"] == '{"type": "ite'
