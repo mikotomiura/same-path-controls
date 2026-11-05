@@ -104,33 +104,44 @@ def test_m2_redo_types_the_first_plan_and_never_plans_again(tmp_path):
     assert res[0]["attempts"][0]["plan_kept_for_redo"] == "M2_8B/t03.try1/events.ndjson"
 
 
-def test_an_item_that_cannot_be_moved_aside_is_failed_and_the_runlist_goes_on(tmp_path):
-    (tmp_path / "run").mkdir()
+def test_an_item_that_cannot_be_moved_aside_is_failed_and_the_runlist_goes_on(tmp_path, monkeypatch):
     out = tmp_path / "run"
 
     def runner(args, folder):
         folder.mkdir(parents=True, exist_ok=True)
         return "interrupted" if folder.name == "a" else "done"
 
+    def refuse(src, dst, *a, **k):
+        raise PermissionError("held by a closing process")
+    monkeypatch.setattr(runlist, "rename", refuse)
     its = [{"name": "a", "args": [], "after": None, "block": 0}, {"name": "b", "args": [], "after": None, "block": 0}]
-    import shutil
-    shutil.rmtree(out)
-    real_run = runlist.run
+    res = {r["item"]: r for r in runlist.run(its, [1], out, runner=runner)}
+    assert res["a"]["result"] == "failed" and res["a"]["detail"] == "rename_failed"
+    assert "PermissionError" in res["a"]["attempts"][0]["rename_error"] and res["b"]["result"] == "done"
+    log = [json.loads(x) for x in (out / "runlog.ndjson").read_text().splitlines()]
+    assert log[-1]["type"] == "footer"
 
-    def run_with_stale_try1():
-        out.mkdir()
-        (out / "a.try1").mkdir()  # left from somewhere: never written over
+
+def test_an_earlier_runs_folder_stops_the_runlist_and_is_never_read(tmp_path):
+    """A runlist made again after a stop finds the stopped run's folders: never read as this run's (code-reviewer
+    round 3: the old meta.json's 'done' was counted)."""
+    for left in ("a", "a.try1"):
+        out = tmp_path / left / "run"
+        out.mkdir(parents=True)
+        (out / left).mkdir()
+        (out / left / "meta.json").write_text('{"status": "done"}')
+        calls = []
+        its = [{"name": "a", "args": [], "after": None, "block": 0}]
         real_mkdir = Path.mkdir
         Path.mkdir = lambda self, *a, **k: None if self == out else real_mkdir(self, *a, **k)
         try:
-            return real_run(its, [1], out, runner=runner)
+            with pytest.raises(RuntimeError, match="exists before its capture"):
+                runlist.run(its, [1], out, runner=lambda args, folder: calls.append(folder) or "done")
         finally:
             Path.mkdir = real_mkdir
-    res = {r["item"]: r for r in run_with_stale_try1()}
-    assert res["a"]["result"] == "failed" and res["a"]["detail"] == "rename_failed"
-    assert "FileExistsError" in res["a"]["attempts"][0]["rename_error"] and res["b"]["result"] == "done"
-    log = [json.loads(x) for x in (out / "runlog.ndjson").read_text().splitlines()]
-    assert log[-1]["type"] == "footer"
+        assert calls == []
+        log = [json.loads(x) for x in (out / "runlog.ndjson").read_text().splitlines()]
+        assert log[-1] == {"type": "stopped", "item": "a", "reason": "folder_exists", "folders": [left]}
 
 
 def test_rename_is_retried_then_raised(tmp_path, monkeypatch):

@@ -149,9 +149,108 @@ def test_a_remote_desktop_host_is_found_in_the_process_list():
     assert remote.hosts_in(listing) == ["remoting_host.exe"]
     assert remote.hosts_in(listing.replace("remoting_host", "notepad")) == []
     assert remote.hosts_in('"REMOTING_HOST.EXE","1","Console","1","1 K"') == ["remoting_host.exe"]
-    src = (ROOT / "capture" / "session.py").read_text(encoding="utf-8")
-    i = src.index("hosts = remote.running()")
-    assert i < src.index("out.mkdir(parents=True, exist_ok=False)") and "return remote.REMOTE_HOST_EXIT" in src[i:i + 300]
+    assert session.remote_stop_message(lambda: []) is None
+    assert "remoting_host.exe" in session.remote_stop_message(lambda: ["remoting_host.exe"])
+
+    def broken():
+        raise RuntimeError("tasklist failed (1)")
+    assert "could not be made" in session.remote_stop_message(broken)  # fail-closed: a failing check stops
+
+
+class _Stopper:
+    def __init__(self, by=None, close_error=None):
+        self.by, self.esc, self.closed, self.close_error = by, None, 0, close_error
+
+    def is_set(self):
+        return self.by is not None
+
+    def close(self):
+        self.closed += 1
+        if self.close_error:
+            raise OSError(self.close_error)
+
+
+def _fake_windows(monkeypatch, plan=None, unload_error=None, stopper=None):
+    """session.main up to the typing, on the Mac: the machine, git, the stop signal and ollama replaced."""
+    from capture import ollama, stop
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(session, "machine", lambda: {"boot_time_utc": None, "ollama_processes_start_utc": None})
+    monkeypatch.setattr(session, "git_state", lambda: {})
+    monkeypatch.setattr(stop, "StopSignal", lambda esc=None: stopper or _Stopper())
+    monkeypatch.setattr(ollama, "model_record", lambda m: {"name": m})
+    monkeypatch.setattr(ollama, "version", lambda: "0")
+    monkeypatch.setattr(ollama, "ps", lambda: [])
+
+    def unload(m):
+        if unload_error:
+            raise unload_error
+    monkeypatch.setattr(ollama, "unload", unload)
+    monkeypatch.setattr(session.time, "sleep", lambda s: None)
+    if plan is not None:
+        monkeypatch.setattr(llm_plan, "make_plan", plan)
+
+
+def _m2_args(tmp_path):
+    (tmp_path / "task.txt").write_text("\ufeffwrite", encoding="utf-8")
+    return ["--llm-plan", "--model", "m", "--prompt-file", str(tmp_path / "task.txt"), "--seed", "1",
+            "--out", str(tmp_path / "c")]
+
+
+def test_a_live_capture_does_not_start_while_a_host_runs_or_the_check_fails(tmp_path, monkeypatch):
+    _fake_windows(monkeypatch)
+    for i, running in enumerate((lambda: ["remoting_host.exe"], lambda: 1 / 0)):
+        monkeypatch.setattr(remote, "running", running)
+        out = tmp_path / f"L0_{i}"
+        assert session.main(["--live", "--out", str(out)]) == remote.REMOTE_HOST_EXIT
+        assert not out.exists()  # before the folder: nothing to clear before the runlist is run again
+
+
+def test_m2_stopped_during_planning_is_interrupted_with_its_end_written(tmp_path, monkeypatch):
+    def plan(*a, **k):
+        raise llm_plan.PlanStopped("stopped")
+    _fake_windows(monkeypatch, plan=plan, stopper=_Stopper(by="capture.stop"))
+    assert session.main(_m2_args(tmp_path)) == session.INTERRUPTED
+    meta = json.loads((tmp_path / "c" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["status"] == "interrupted" and meta["interrupted"] == {"during": "M2 planning"} and meta["end_utc"]
+
+
+def test_m2_an_error_whose_cleanup_fails_still_writes_the_end(tmp_path, monkeypatch):
+    def plan(*a, **k):
+        raise llm_plan.OllamaError("ollama: HTTPError: 500", {"body": {"prompt": "secret"}})
+    _fake_windows(monkeypatch, plan=plan, stopper=_Stopper(close_error="handle"))
+    with pytest.raises(llm_plan.OllamaError):
+        session.main(_m2_args(tmp_path))
+    meta = json.loads((tmp_path / "c" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["status"] == "failed" and meta["end_utc"] and "secret" not in json.dumps(meta)
+    assert meta["stop_errors"] == ["stop signal: OSError: handle"]
+
+
+def test_m2_a_plan_made_is_kept_for_the_redo_when_the_unload_fails(tmp_path, monkeypatch):
+    presses = [{"i": 0, "t_ms": 0.0, "key": "a"}]
+
+    def plan(*a, **k):
+        return {"ok": True, "attempts": 1, "failures": [], "skipped_chars": 0, "presses": presses}
+    _fake_windows(monkeypatch, plan=plan, unload_error=ConnectionResetError("reset"))
+    with pytest.raises(ConnectionResetError):
+        session.main(_m2_args(tmp_path))
+    first = tmp_path / "c"
+    assert json.loads((first / "meta.json").read_text(encoding="utf-8"))["status"] == "failed"
+    args = ["--llm-plan", "--model", "m"]
+    assert runlist.redo_args(args, first) == ["--model", "m", "--events", str(first / "events.ndjson")]
+
+
+def test_the_session_s_exit_5_stops_the_runlist_with_or_without_a_meta(tmp_path, monkeypatch):
+    rc = {"v": 0}
+    monkeypatch.setattr(runlist.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": rc["v"]})())
+    out = tmp_path / "c"
+    rc["v"] = remote.REMOTE_HOST_EXIT
+    assert runlist.default_runner([], out) == runlist.REMOTE_HOST
+    out.mkdir()
+    (out / "meta.json").write_text('{"status": "interrupted"}')
+    assert runlist.default_runner([], out) == runlist.REMOTE_HOST  # an L0 ended by a host: stops, not redone
+    rc["v"] = 3
+    assert runlist.default_runner([], out) == "interrupted"
+    assert runlist.default_runner([], tmp_path / "none").startswith("failed (exit 3, no meta.json)")
 
 
 def _live_items():
@@ -164,7 +263,8 @@ def test_a_runlist_with_a_live_item_does_not_start_while_a_remote_host_runs(tmp_
     with pytest.raises(RuntimeError, match="remote-desktop host"):
         runlist.run(_live_items(), [1], tmp_path / "run", runner=lambda a, o: calls.append(o) or "done",
                     remote_check=lambda: ["remoting_host.exe"])
-    assert calls == [] and not (tmp_path / "run" / "runlog.ndjson").exists()  # nothing written: run it again
+    assert calls == [] and not (tmp_path / "run").exists()  # nothing written: run it again
+    runlist.run(_live_items(), [1], tmp_path / "run", runner=lambda a, o: "done", remote_check=lambda: [])
     # without a live item, no check
     runlist.run([{"name": "P5/c0", "args": [], "after": None, "block": 0}], [1], tmp_path / "run2",
                 runner=lambda a, o: "done", remote_check=lambda: 1 / 0)
@@ -182,11 +282,28 @@ def test_a_remote_host_found_by_the_session_stops_the_runlist_and_counts_nothing
     assert calls == ["e0"] and [r["type"] for r in rows] == ["header", "stopped"]  # no item line, no redo
 
 
+def _live_hook(end=False, foreign=False, dead=False):
+    h = type("H", (), {})()
+    h.end, h.foreign = threading.Event(), threading.Event()
+    if end:
+        h.end.set()
+    if foreign:
+        h.foreign.set()
+    h.p = type("P", (), {"returncode": 1, "poll": lambda self: 1 if dead else None})()
+    return h
+
+
 def test_the_live_wait_stops_on_capture_stop_and_on_a_dead_hook():
-    src = (ROOT / "capture" / "session.py").read_text(encoding="utf-8")
-    loop = src[src.index("while not hook.end.wait(0.05):"):src.index("        elif a.llm_stream:")]
-    assert "hook.foreign.is_set()" in loop and "stopper.is_set()" in loop and "hook.p.poll()" in loop
-    assert "stopper.esc = hook.esc if hook and not a.live else None" in src  # Esc is a press of L0
+    assert session.wait_live(_live_hook(end=True), _Stopper(), 0) is None
+    assert session.wait_live(_live_hook(foreign=True), _Stopper(), 0) == {"foreign_injected_key": True}
+    assert session.wait_live(_live_hook(), _Stopper(by="capture.stop"), 0) == {"stopped_by": "capture.stop"}
+    with pytest.raises(RuntimeError, match="the hook ended"):
+        session.wait_live(_live_hook(dead=True), _Stopper(), 0)
+    # the end seen with a foreign key or a stop: the interruption is not hidden (Codex, round 3)
+    assert session.wait_live(_live_hook(end=True, foreign=True), _Stopper(), 0) == {"foreign_injected_key": True}
+    assert session.wait_live(_live_hook(end=True), _Stopper(by="capture.stop"), 0) == {"stopped_by": "capture.stop"}
+    # an end with a hook that has ended after writing it: the end, not a failure
+    assert session.wait_live(_live_hook(end=True, dead=True), _Stopper(), 0) is None
 
 
 def test_the_hook_reader_sets_foreign_from_the_hook_s_line():
@@ -204,10 +321,6 @@ def test_the_end_before_typing_tells_a_stop_from_an_error():
                                      None)
     assert er == {"status": "failed", "error": "OllamaError: ollama: HTTPError: 500"}  # the record is not in meta
     assert session.ended_before_typing(ConnectionRefusedError("no"), None)["status"] == "failed"
-    src = (ROOT / "capture" / "session.py").read_text(encoding="utf-8")
-    body = src[src.index("    res = None\n    try:"):src.index("    kids: list = []")]
-    assert "meta.update(ended_before_typing(e, stopper.by))" in body and "return INTERRUPTED" in body
-    assert "ollama.model_record(a.model)" in body  # the LLM's header is inside the try: its error is written
 
 
 def test_m2_a_stop_during_the_last_attempt_is_a_stop_not_the_counted_failure():

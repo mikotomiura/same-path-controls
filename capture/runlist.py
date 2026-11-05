@@ -162,7 +162,7 @@ def default_runner(args: list[str], out: Path) -> str:
     from capture import remote
     r = subprocess.run([sys.executable, "-m", "capture.session", *args, "--out", str(out)], cwd=ROOT)
     meta = out / "meta.json"
-    if r.returncode == remote.REMOTE_HOST_EXIT and not meta.exists():
+    if r.returncode == remote.REMOTE_HOST_EXIT:  # with a meta.json or not: the runlist stops (Codex, round 3)
         return REMOTE_HOST
     if not meta.exists():
         return f"failed (exit {r.returncode}, no meta.json)"
@@ -252,6 +252,12 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
     out = Path(out).resolve()
     runs_sha = runs_sha or runs_sha256(items)
     seq, moves = order(items, key)
+    in_run = seq if block is None else [it for it in seq if it["block"] == block]
+    if any("--live" in it["args"] for it in in_run):  # before anything is written: the run can simply be made again
+        hosts = remote_check()                         # (decision 5; before the mkdir, code-reviewer round 3)
+        if hosts:
+            from capture import remote
+            raise RuntimeError(remote.message(hosts) + " The runlist did not start.")
     if block is None:
         out.mkdir(parents=True, exist_ok=False)
         log_name, done, attempted = "runlog.ndjson", {}, {}
@@ -267,11 +273,6 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
         log_name = f"runlog.b{block}.ndjson"
     if (out / log_name).exists():
         raise ValueError(f"{out / log_name} exists: block {block} has run (or stopped) before; ask before going on")
-    if any("--live" in it["args"] for it in seq):  # before the runlog: the block can simply be run again (decision 5)
-        hosts = remote_check()
-        if hosts:
-            from capture import remote
-            raise RuntimeError(remote.message(hosts) + " The runlist did not start.")
     log = open(out / log_name, "x", encoding="utf-8", newline="\n")
 
     def write(rec: dict) -> None:
@@ -312,6 +313,13 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
             shower(it["show"])
         attempts = []
         folder = out / name
+        leftover = [f for f in (folder, folder.with_name(folder.name + ".try1")) if f.exists()]
+        if leftover:  # an earlier run's capture (a runlist made again after a stop): never read as this run's
+            write({"type": "stopped", "item": name, "reason": "folder_exists",
+                   "folders": [f.relative_to(out).as_posix() for f in leftover]})
+            log.close()
+            raise RuntimeError(f"{name}: {', '.join(map(str, leftover))} exists before its capture: an earlier run's "
+                               "folder is never read as this run's (code-reviewer round 3). Ask before going on.")
         args = resolve(it["args"], attempted, out)
         detail = "missing_after_redo"
         for a in range(2):
@@ -330,8 +338,9 @@ def run(items: list[dict], key: list[int], out: Path, runner=default_runner, blo
                 from capture import remote
                 write({"type": "stopped", "item": name, "reason": "remote_host"})
                 log.close()
-                raise RuntimeError(f"{name}: a remote-desktop host is running; the runlist stops here (the item is "
-                                   f"not counted). {remote.message(['remoting_host.exe'])} Ask before going on.")
+                raise RuntimeError(f"{name}: a remote-desktop host is running, or the check of the hosts failed (the "
+                                   "session's message above); the runlist stops here (the item is not counted). "
+                                   f"{remote.message(list(remote.REMOTE_HOSTS))} Ask before going on.")
             if a == 0:  # the interrupted attempt is kept beside, and the redo takes the item's folder
                 first = folder.with_name(folder.name + ".try1")
                 try:

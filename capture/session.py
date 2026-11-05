@@ -243,6 +243,33 @@ def ended_before_typing(e: BaseException, stopped_by: str | None) -> dict:
     return {"status": "failed", "error": f"{type(e).__name__}: {e}"}
 
 
+def remote_stop_message(running=None) -> str | None:
+    """Why a live capture must not go on: a remote-desktop host runs, or the hosts could not be looked at (fail-closed:
+    a failing check stops the runlist instead of failing L0, code-reviewer round 3). None when it may go on."""
+    from capture import remote
+    try:
+        hosts = (running or remote.running)()
+    except Exception as e:  # noqa: BLE001 - any failure of the check stops
+        return f"the remote-desktop check could not be made ({type(e).__name__}: {e}); the runlist stops"
+    return remote.message(hosts) if hosts else None
+
+
+def wait_live(hook, stopper, step_s: float = 0.05) -> dict | None:
+    """Wait for the end of L0 (Ctrl+Alt+End). An injected key that is not ours and capture.stop interrupt it; a hook
+    that ended raises. Looked at once more after the end is seen, so that an end coming with a foreign key or a stop
+    does not hide it (Codex, round 3). Order: foreign key, stop, then the end."""
+    while True:
+        ended = hook.end.wait(step_s)
+        if hook.foreign.is_set():
+            return {"foreign_injected_key": True}
+        if stopper.is_set():  # capture.stop from another console (the Esc of L0 is a press of L0)
+            return {"stopped_by": "capture.stop"}
+        if ended:
+            return None
+        if hook.p.poll() is not None:
+            raise RuntimeError(f"the hook ended during the live capture ({hook.p.returncode})")
+
+
 def main(argv=None) -> int:
     a = parse(argv)
     if sys.platform != "win32":
@@ -254,9 +281,9 @@ def main(argv=None) -> int:
 
     out: Path = a.out
     if a.live:  # decision of 2026-11-04 (a): L0 is typed on the PC's own keyboard, never through a remote desktop
-        hosts = remote.running()
-        if hosts:  # before the folder: the runlist stops on the exit code (decision 5), no item is lost
-            print(remote.message(hosts), file=sys.stderr, flush=True)
+        stop_msg = remote_stop_message()
+        if stop_msg:  # before the folder: the runlist stops on the exit code (decision 5), no item is lost
+            print(stop_msg, file=sys.stderr, flush=True)
             return remote.REMOTE_HOST_EXIT
     out.mkdir(parents=True, exist_ok=False)  # never over an earlier capture
     sys.setswitchinterval(a.switch_interval_ms / 1000.0)
@@ -278,22 +305,23 @@ def main(argv=None) -> int:
     # Esc seen by the hook (given to the signal once the hook runs), or 'python -m capture.stop' from another console
     # (the only way with --no-hook). Made here, not at the typing, so that a stop during M2's planning, the browser's
     # start or the countdown is seen, and capture.stop finds a capture to stop (Mac review of returns-v3).
-    stopper = StopSignal(None)
+    stopper = None
     presses: list[dict] | None = None
     llm_log = None
-    if a.events:
-        header, presses = events.read(a.events)
-        events.write(out / "events.ndjson", presses, header.get("series", ""), header.get("source", ""),
-                     copied_from=str(a.events))
-        src_meta = Path(a.events).parent / "meta.json"
-        if src_meta.exists():  # an M2 redone by the runlist: the plan's record of the first attempt (review 2026-11-04)
-            sm = json.loads(src_meta.read_text(encoding="utf-8"))
-            if "llm_plan" in sm:
-                meta["plan_from"] = {"folder": str(Path(a.events).parent), "mode": sm.get("mode"),
-                                     "llm_plan": sm["llm_plan"],
-                                     "ollama_ps_before_capture": sm.get("ollama_ps_before_capture")}
     res = None
     try:  # the LLM's records and M2's planning: an error here is a failed capture with its end written (returns-v3)
+        stopper = StopSignal(None)
+        if a.events:
+            header, presses = events.read(a.events)
+            events.write(out / "events.ndjson", presses, header.get("series", ""), header.get("source", ""),
+                         copied_from=str(a.events))
+            src_meta = Path(a.events).parent / "meta.json"
+            if src_meta.exists():  # an M2 redone by the runlist: the plan's record of the first attempt
+                sm = json.loads(src_meta.read_text(encoding="utf-8"))
+                if "llm_plan" in sm:
+                    meta["plan_from"] = {"folder": str(Path(a.events).parent), "mode": sm.get("mode"),
+                                         "llm_plan": sm["llm_plan"],
+                                         "ollama_ps_before_capture": sm.get("ollama_ps_before_capture")}
         if a.llm_stream or a.llm_plan:
             task = a.prompt_file.read_text(encoding="utf-8-sig").strip()  # a BOM is not part of the task (returns-v3)
             llm_log = open(out / "llm.ndjson", "x", encoding="utf-8", newline="\n")
@@ -307,21 +335,37 @@ def main(argv=None) -> int:
             res = llm_plan.make_plan(a.model, ollama.essay_prompt(task), a.seed, llm_log, stop=stopper)
             meta["llm_plan"] = {"ok": res["ok"], "attempts": res["attempts"], "failures": res["failures"],
                                 "skipped_chars": res["skipped_chars"]}
+            if res["ok"]:  # before the unload: a plan made is kept for the redo, whatever fails after it
+                presses = res["presses"]
+                events.write(out / "events.ndjson", presses, "M2", f"llm_plan {a.model} seed {a.seed}")
+                save_meta()
             ollama.unload(a.model)
             time.sleep(1.0)
             meta["ollama_ps_before_capture"] = ollama.ps()
     except BaseException as e:
-        meta.update(ended_before_typing(e, stopper.by))
+        meta.update(ended_before_typing(e, stopper.by if stopper is not None else None))
+        cleanup_errors = []  # each step tried, and the end written whatever fails (Codex, round 3)
         if a.llm_plan:
             try:
                 ollama.unload(a.model)
             except Exception as ue:  # noqa: BLE001 - the end recorded is the planning's
                 meta["unload_error"] = f"{type(ue).__name__}: {ue}"
-        stopper.close()
-        if llm_log is not None:
-            llm_log.close()
+        for what, close in (("stop signal", stopper.close if stopper is not None else None),
+                            ("llm log", llm_log.close if llm_log is not None else None)):
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as ce:  # noqa: BLE001 - recorded beside the first error
+                cleanup_errors.append(f"{what}: {type(ce).__name__}: {ce}")
+        if cleanup_errors:
+            meta["stop_errors"] = cleanup_errors
         meta["end_utc"] = now_utc()
-        save_meta()
+        try:
+            save_meta()
+        except Exception as se:  # noqa: BLE001 - the disk may be the fault: the end goes to stderr as well
+            print(f"meta.json could not be written ({type(se).__name__}: {se}); the capture ended as "
+                  f"{meta['status']}: {meta.get('error', '')}", file=sys.stderr, flush=True)
         if meta["status"] == "interrupted":
             print("M2: the planning was stopped; nothing typed", flush=True)
             return INTERRUPTED
@@ -335,9 +379,6 @@ def main(argv=None) -> int:
             save_meta()
             print("M2: the plan failed 3 times; counted, nothing typed")
             return 0
-        presses = res["presses"]
-        events.write(out / "events.ndjson", presses, "M2", f"llm_plan {a.model} seed {a.seed}")
-        save_meta()
 
     kids: list = []
     b = None
@@ -412,17 +453,17 @@ def main(argv=None) -> int:
             print("Type now. End with Ctrl+Alt+End.", flush=True)
             # a key through a remote desktop comes injected: neither L0's presses nor the end chord can be told from
             # an injection, so the live capture stops at the first one (researcher's decision of 2026-11-04, c)
-            while not hook.end.wait(0.05):
-                if hook.foreign.is_set():
-                    print("A key came injected (a remote desktop?): stopped. Type on this PC's own keyboard.",
-                          flush=True)
-                    interrupted = {"foreign_injected_key": True}
-                    break
-                if stopper.is_set():  # capture.stop from another console (the Esc of L0 is a press of L0)
-                    interrupted = {"stopped_by": "capture.stop"}
-                    break
-                if hook.p.poll() is not None:
-                    raise RuntimeError(f"the hook ended during the live capture ({hook.p.returncode})")
+            interrupted = wait_live(hook, stopper)
+            if interrupted and "foreign_injected_key" in interrupted:
+                print("A key came injected (a remote desktop?): stopped. Type on this PC's own keyboard.",
+                      flush=True)
+            # a host started during L0 and still running: the runlist stops (Codex, round 3); a host started and
+            # ended within L0 is seen only by its keys (foreign_injected_key above)
+            stop_msg = remote_stop_message()
+            if stop_msg:
+                print(stop_msg, file=sys.stderr, flush=True)
+                interrupted = {**(interrupted or {}), "remote_host_at_end": stop_msg}
+                meta["remote_host_stop"] = True
         elif a.llm_stream:
             res = llm_stream.run(a.model, ollama.essay_prompt(task), a.seed, a.inject, hwnd, stop, llm_log)
             c = res["counts"]
@@ -517,7 +558,8 @@ def main(argv=None) -> int:
                 k.stop()
             except Exception as e:  # noqa: BLE001
                 errors.append(f"{k.name}: {e}")
-        stopper.close()  # closed already after the typing; here when an error came before it
+        if stopper is not None:
+            stopper.close()  # closed already after the typing; here when an error came before it
         if llm_log is not None and not llm_log.closed:
             llm_log.close()
         meta["end_utc"] = now_utc()
@@ -529,6 +571,8 @@ def main(argv=None) -> int:
     s = summary.summarize(out)
     (out / "summary.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
     print(json.dumps(s, indent=1))
+    if meta.get("remote_host_stop"):  # before failed: the runlist stops whatever else went wrong
+        return remote.REMOTE_HOST_EXIT
     if meta["status"] == "failed":
         return 1
     return INTERRUPTED if meta["status"] == "interrupted" else 0
