@@ -33,5 +33,10 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   "the first 0", [character, gap] pairs with the characters fixed) gave one repeated value (0, 1, 20, 50, 100) or a
   count (0, 1, 2, ...) on both models; no form gave gaps that change with the characters. The researcher kept option A
   (decision of 2026-11-04): the plan is the model's own, constant gaps included, and is typed as planned.
+- Seen in the check at the production length (2026-11-06, returns-v3.5/m2-check-v3.5.md; commit 662d3b7; generic
+  prompt, seeds 1-3, essays of 1049-1607 characters): all 6 plans passed at the first attempt. Their gaps were all 0
+  (7B seeds 1 and 2, 14B seed 1), 0 then one value (14B seed 2: 20 ms; seed 3: 15 ms), or a count in steps of 5 ms
+  (7B seed 3: 0, 10, 15, ... up to 5990 ms, 1198 gaps summing to 3591 s, about 60 min of typing for one essay). The
+  researcher kept option A (decision of 2026-11-06): such a plan is typed as planned, with no bound on its length.
 - Whether a value can be affected: yes. Every M2 value comes from plans made this way; the paper reports this entry
-  and that the plans' gaps were constant in the checks.
+  and that the plans' gaps in the checks were constant or a count, never changing with the characters.
