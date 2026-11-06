@@ -75,3 +75,16 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   over Space. The set-aside captures enter no value.
 - Whether a value can be affected: yes for L0, L1_idle and L1_load: the researcher typed the 4 prompts for the third
   time, and keeping Shift off Space is a constraint on live typing. No other series is concerned.
+
+## D4. 2026-11-06 / block 0 (L0/e3) / the third block 0 ended without a footer; set aside with --set-aside and run again
+
+- What happened: the third block 0 (after D3) started at 08:36:02Z. Its first item, L0/e3, began at 2026-11-06T08:36:32.742+00:00 and its
+  files stop about 16 s later (meta.json status still 'running'); the runlist process was gone and runlog.b0.ndjson
+  held its header only (no item line, no footer). The runlist's console window was closed before typing began (the
+  researcher was restarting the shell; not otherwise checked).
+- What was done: block 0 was set aside with the runlist's own --set-aside (C:\work\v7-captures\stopped-20261106T083804Z\;
+  set_aside.json: to_move = moved = [L0/e3, runlog.b0.ndjson], origin of L0/e3 'unknown', cut_item L0/e3). Judged by
+  hand: L0/e3 was made by the stopped run, not before it (C:\work\v7-captures\L0\ had been moved aside for D3 at
+  08:35:40Z, and the folder's meta.json starts at 2026-11-06T08:36:32.742+00:00). Block 0 was then run again with the same command.
+- Whether a value can be affected: no value beyond D3's (no essay was typed in the stopped run; the set-aside folder
+  enters no value).
