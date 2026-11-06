@@ -88,3 +88,16 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   08:35:40Z, and the folder's meta.json starts at 2026-11-06T08:36:32.742+00:00). Block 0 was then run again with the same command.
 - Whether a value can be affected: no value beyond D3's (no essay was typed in the stopped run; the set-aside folder
   enters no value).
+
+## D5. 2026-11-06 / block 0 (L0/e0, L0/e1) and block 1 / L0/e0 stopped and redone; two essays shorter than 150 words; block 1 started in the evening
+
+- What happened: the fourth block 0 (after D4) ran from 08:38:32Z to 09:09:15Z: done 3, redone 1, failed 0, no_plan 0.
+  During L0/e0 the researcher pressed Caps Lock; on the researcher's decision, e0 was stopped with capture.stop at
+  09:06:19Z (meta.json stopped_by capture.stop, kept as L0/e0.try1) and the runlist typed it again at once (redone).
+  tools/l0check.py gave ok for all 4 essays. Counted presses (hook = page): e0 239, e1 408, e2 920, e3 809; e0 and e1
+  are shorter than the conditions' 150-250 words (about 45 and 80 words by count of presses; the text is not kept).
+- What was done (the researcher's decisions of 2026-11-06): the 4 essays are kept as L0 and recorded here; no block 0
+  is typed again. Block 1 was started the same evening (about 18:15 JST, 09:1xZ), not in the morning, and runs past
+  midnight JST (the same UTC date is expected; its start and end are in the session notes).
+- Whether a value can be affected: yes for L0, L1_idle and L1_load: fewer presses in e0 and e1 (fewer gaps per essay);
+  e0's second attempt was typed right after the first was stopped, with no prompt shown again.
