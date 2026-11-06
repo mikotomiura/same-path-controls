@@ -57,3 +57,21 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   closed, in English, 150-250 words per essay. The set-aside captures enter no value.
 - Whether a value can be affected: yes for L0, L1_idle and L1_load (L0 is the second session of typing on these 4
   prompts by the researcher, who had seen them once). No other series is concerned.
+
+## D3. 2026-11-06 / block 0 (L0/e0-e3) / Shift+Space not counted by the hook; set aside by hand and typed a third time
+
+- What happened: the second block 0 (after D2) ran from 07:50:41Z to 08:33:09Z, done 4 (one attempt each, no stop).
+  tools/l0check.py gave e0 STOP, e1 STOP, e2 ok, e3 ok. Counting kinds only (no key, text or time), the two layers
+  differed in space only: the hook classed as 'nonchar' (not counted) the Space presses typed with Shift held (105 in
+  e0, 24 in e1; Shift's downs and ups balanced), which the page counted as space. e0 and e1 alone hold one Caps Lock
+  press each: Caps Lock was on and Shift was held to type in lower case. capture/hooklog.py's layout table comes from
+  VkKeyScanW, which maps ' ' to Space without Shift only, so Shift+Space has no character and is 'nonchar' (a gap in
+  the capture code; the kind is written at capture time and Space's virtual key is not kept, so it cannot be read
+  again afterwards). e0 also held one Delete on the hook only. The injected series of blocks 1-6 type no Shift, so
+  only L0 is concerned (not checked).
+- What was done (the researcher's decision of 2026-11-06): the code was not changed. C:\work\v7-captures\L0\ and
+  runlog.b0.ndjson were moved by hand to C:\work\v7-captures\stopped-20261106T083540Z-L0\ (nothing deleted; kept on the
+  work PC, not returned) and block 0 was typed a third time with Caps Lock off, Shift only for capitals and never held
+  over Space. The set-aside captures enter no value.
+- Whether a value can be affected: yes for L0, L1_idle and L1_load: the researcher typed the 4 prompts for the third
+  time, and keeping Shift off Space is a constraint on live typing. No other series is concerned.
