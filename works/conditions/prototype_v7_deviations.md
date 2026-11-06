@@ -40,3 +40,20 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   researcher kept option A (decision of 2026-11-06): such a plan is typed as planned, with no bound on its length.
 - Whether a value can be affected: yes. Every M2 value comes from plans made this way; the paper reports this entry
   and that the plans' gaps in the checks were constant or a count, never changing with the characters.
+
+## D2. 2026-11-06 / block 0 (L0/e0-e3) / L0 typed with the IME open, set aside by hand and typed again
+
+- What happened: block 0 ran from 07:32:37Z to 07:37:45Z; the runlog gave done 4 (one attempt each, no stop) and wrote
+  its footer. tools/l0check.py (the analysis's reader, prototype_v7_run.load_capture live=True) gave STOP on all 4
+  essays: the hook and page layers did not hold the same presses. Counting kinds only (no key, text or time), the hook
+  counted 132-212 presses per essay and the page 8-54, the page's other key downs falling outside the counted kinds.
+  The researcher said the IME (Japanese input) was used while typing: the capture closes the IME before the signal,
+  and it was opened again during the essays, so the page saw the presses as IME processing and the hook as keys.
+  The researcher also said some keys were typed before "Recording." was shown. The essays were also far shorter than
+  the conditions' 150-250 words.
+- What was done (the researcher's decision of 2026-11-06): the runlist refuses to set aside a block with a footer, so
+  C:\work\v7-captures\L0\ and runlog.b0.ndjson were moved by hand to C:\work\v7-captures\stopped-20261106T074342Z-L0\
+  (nothing deleted; kept on the work PC, not returned), and block 0 was run again with the same command, the IME kept
+  closed, in English, 150-250 words per essay. The set-aside captures enter no value.
+- Whether a value can be affected: yes for L0, L1_idle and L1_load (L0 is the second session of typing on these 4
+  prompts by the researcher, who had seen them once). No other series is concerned.
