@@ -422,6 +422,22 @@ def set_aside(items: list[dict], out: Path, block: int, runs_sha: str, now: str 
     captured = {r.get("item") for r in rows if r.get("type") == "item" and r.get("attempts")} | host_stop
     made = {r.get("item") for r in rows if r.get("type") == "item" and r.get("detail") != "missing_dependency"} \
         | host_stop
+    # the item the run was in when it was cut (Ctrl+C, a make that failed, an error, a power loss; returns-v3.5: Ctrl+C
+    # in M1_replay_8B/t00's countdown was read as 'before_the_run'): the first item of the header's order without a
+    # line, when the runlog does not end with a 'stopped' line (a run that stopped itself wrote why and reached no
+    # further). Its paths are 'unknown': no line tells whether the cut came before or after its leftover check, that
+    # check does not look at the make's files, and a cut last line may be its own line or a 'stopped' one (Codex and
+    # code-reviewer, returns-v3.5; creation times were tried and left out: copies read as new, NTFS tunnelling keeps
+    # an old time, the header's start is floored to the second). The item is named in cut_item.
+    cut_in = None
+    if rows[-1].get("type") != "stopped":
+        seen = {r.get("item") for r in rows if r.get("type") in ("item", "stopped")}
+        cut_in = next((n for n in rows[0].get("order") or [] if n not in seen), None)
+
+    def origin_of(n: str, by: set) -> str:
+        if n == cut_in:
+            return "unknown"
+        return "stopped_run" if n in by else "before_the_run"
     stamp = now or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = out / f"stopped-{stamp}"
     todo, origin = [], {}
@@ -430,10 +446,10 @@ def set_aside(items: list[dict], out: Path, block: int, runs_sha: str, now: str 
         for f, by in ((out / n, captured), (out / (n + ".try1"), captured), *((f, made) for f in made_files(it, out))):
             if f.exists():
                 todo.append(f)
-                origin[f.relative_to(out).as_posix()] = "stopped_run" if n in by else "before_the_run"
+                origin[f.relative_to(out).as_posix()] = origin_of(n, by)
     rel = [f.relative_to(out).as_posix() for f in todo] + [log.name]
     rec = {"block": block, "runs_sha256": runs_sha, "utc": stamp, "to_move": rel, "moved": [], "origin": origin,
-           "stopped_runlog": rows, **({"cut_last_line": cut} if cut is not None else {})}
+           "cut_item": cut_in, "stopped_runlog": rows, **({"cut_last_line": cut} if cut is not None else {})}
     dest.mkdir(exist_ok=False)
 
     def save() -> None:

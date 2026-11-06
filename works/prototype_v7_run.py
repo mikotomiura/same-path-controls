@@ -179,13 +179,16 @@ class Layer:
     times: np.ndarray     # ms, in capture order, from the first counted press (not sorted, not cleaned)
     kinds: list[str]
     not_counted: int      # events of a kind outside COUNTED_KINDS (modifiers, the stop key), left out and counted
+    repeats: int = 0      # downs of a counted kind marked repeat, left out (v6's reading) and reported per series
+    # (cleaning.repeats_left_out; the researcher's decision of 2026-11-06: returns-v3.5 saw Chrome mark one injected
+    # press of 1558 as repeat on the page, none on the hook)
 
 
-def _layer(times: list[float], kinds: list[str], not_counted: int) -> Layer:
+def _layer(times: list[float], kinds: list[str], not_counted: int, repeats: int = 0) -> Layer:
     t = np.array(times, dtype=float)
     if not np.all(np.isfinite(t)):
         raise RunStop("a recorded time is not finite")
-    return Layer(t - t[0] if t.size else t, kinds, not_counted)
+    return Layer(t - t[0] if t.size else t, kinds, not_counted, repeats)
 
 
 def need_types(path: Path, r: dict, types: dict) -> None:
@@ -199,7 +202,7 @@ def need_types(path: Path, r: dict, types: dict) -> None:
 def read_hook(path: Path, injected: bool, window_ns: tuple[int, int] | None = None) -> Layer:
     """ASSUMED['hook.ndjson']. Key downs only, auto-repeats left out; injected presses for a replay, not-injected ones
     for live typing (L0), which are read inside window_ns (the signal to the end chord) only."""
-    ts, ks_, other = [], [], 0
+    ts, ks_, other, reps = [], [], 0, 0
     rows = read_ndjson(path)
     if not rows or rows[0].get("type") != "header" or rows[-1].get("type") != "footer":
         raise RunStop(f"{path}: no header and footer line (the hook did not finish writing)")
@@ -209,7 +212,7 @@ def read_hook(path: Path, injected: bool, window_ns: tuple[int, int] | None = No
         if r.get("type") != "key":
             raise RunStop(f"{path}: a line of unknown type {r.get('type')!r}")
         need_types(path, r, {"t_ns": int, "down": bool, "injected": bool, "ours": bool, "repeat": bool, "kind": str})
-        if not r["down"] or r["repeat"]:
+        if not r["down"]:
             continue
         # a replay's presses are those the capture injected (injected and ours, as the work PC's summary counts them);
         # live typing's are the not-injected ones
@@ -218,20 +221,23 @@ def read_hook(path: Path, injected: bool, window_ns: tuple[int, int] | None = No
             continue
         if window_ns is not None and not window_ns[0] <= r["t_ns"] <= window_ns[1]:
             continue
+        if r["repeat"]:   # left out as before; counted when of a counted kind (the selection above left unchanged)
+            reps += r["kind"] in COUNTED_KINDS
+            continue
         if r["kind"] in COUNTED_KINDS:
             ts.append(r["t_ns"] / 1e6)
             ks_.append(r["kind"])
         else:
             other += 1
-    return _layer(ts, ks_, other)
+    return _layer(ts, ks_, other, reps)
 
 
 PAGE_OTHER_TYPES = ("open", "status", "ready", "armed", "log")   # capture/serve.py's other lines
 
 
 def read_page(path: Path) -> Layer:
-    """ASSUMED['page.ndjson']. Keydowns that are not repeats."""
-    ts, ks_, other = [], [], 0
+    """ASSUMED['page.ndjson']. Keydowns that are not repeats (the repeats of a counted kind are counted)."""
+    ts, ks_, other, reps = [], [], 0, 0
     for r in read_ndjson(path):
         if r.get("type") in PAGE_OTHER_TYPES:
             continue
@@ -239,7 +245,8 @@ def read_page(path: Path) -> Layer:
             raise RunStop(f"{path}: a line of unknown type {r.get('type')!r}")
         need_types(path, r, {"t_ms": (int, float), "kind": str, "repeat": bool, "trusted": bool, "composing": bool,
                              "in_box": bool})
-        if r["repeat"]:
+        if r["repeat"]:   # counted as presses are: of a counted kind, in the box and not composing (code-reviewer)
+            reps += r["kind"] in COUNTED_KINDS and r["in_box"] and not r["composing"]
             continue
         if r["kind"] in COUNTED_KINDS and (not r["in_box"] or r["composing"]):
             raise RunStop(f"{path}: a counted press outside the box or while composing (the work PC's checks make "
@@ -249,7 +256,7 @@ def read_page(path: Path) -> Layer:
             ks_.append(r["kind"])
         else:
             other += 1
-    return _layer(ts, ks_, other)
+    return _layer(ts, ks_, other, reps)
 
 
 def read_inject(path: Path) -> dict:
@@ -1028,7 +1035,9 @@ def run(c: dict, h0: list[dict], e_gaps: list[np.ndarray], e_train_idx: np.ndarr
                 v = rec_list(s_, la, ties)
                 rec["cleaning"].setdefault(tag, {}).setdefault(s_, {})[la] = {
                     "dropped_equal_times": int(sum(x.dropped for x in v if x)),
-                    "inversions": int(sum(x.inversions for x in v if x))}
+                    "inversions": int(sum(x.inversions for x in v if x)),
+                    "repeats_left_out": int(sum(cp.layers[la].repeats for cp in caps[s_]
+                                                if cp.status == "captured" and la in cp.layers))}
 
     # machine_path
     mp: dict = {}

@@ -635,3 +635,57 @@ def test_set_aside_tells_a_folder_from_before_the_run_from_one_the_run_made(tmp_
     rec = json.loads((runlist.set_aside(its, out, 0, runlist.runs_sha256(its), now="T") / "set_aside.json")
                      .read_text(encoding="utf-8"))
     assert rec["origin"] == {"a/e0": "stopped_run", "b/e0": "before_the_run", "c/e0": "before_the_run"}
+
+
+def test_set_aside_names_the_item_the_run_was_cut_in_and_leaves_its_origin_unknown(tmp_path):
+    """Returns-v3.5: Ctrl+C in the second item's countdown left its folder and no line for it. Whether its paths came
+    from the stopped run cannot be told (Codex and code-reviewer), so they read 'unknown' and the item is named in
+    cut_item; the items after it were not reached (their folders, put there by hand, are from before)."""
+    its = [{"name": n, "args": [], "after": None, "block": 0} for n in ("a/e0", "b/e0", "c/e0")]
+    out = (tmp_path / "run").resolve()
+
+    def runner(a, f):
+        f.mkdir(parents=True)
+        if f.parent.name == "b":
+            raise KeyboardInterrupt
+        return "done"
+    with pytest.raises(KeyboardInterrupt):
+        runlist.run(its, [1], out, runner=runner, block=0)
+    (out / "c" / "e0").mkdir(parents=True)
+    rows = [json.loads(x) for x in (out / "runlog.b0.ndjson").read_text(encoding="utf-8").splitlines()]
+    assert [r.get("item") for r in rows[1:]] == ["a/e0"]  # as on the work PC: no line for the cut item
+    rec = json.loads((runlist.set_aside(its, out, 0, runlist.runs_sha256(its), now="T") / "set_aside.json")
+                     .read_text(encoding="utf-8"))
+    assert rec["origin"] == {"a/e0": "stopped_run", "b/e0": "unknown", "c/e0": "before_the_run"}
+    assert rec["cut_item"] == "b/e0"
+
+
+def test_set_aside_leaves_the_cut_items_make_file_unknown(tmp_path):
+    """code-reviewer: the leftover check does not look at the make's file, so a file of the cut item's make may be
+    from before the run (its make then fails on open 'x' and the run stops without a line)."""
+    its = [{"name": "a/e0", "args": [], "after": None, "block": 0},
+           {"name": "b/e0", "args": [], "after": None, "block": 0, "make": ["m", "--out", "{root}/_derived/b.ndjson"]}]
+    out = (tmp_path / "run").resolve()
+    (out / "_derived").mkdir(parents=True)
+    (out / "_derived" / "b.ndjson").write_text("{}\n")
+    with pytest.raises(RuntimeError, match="make exited 1"):
+        runlist.run(its, [1], out, runner=lambda a, f: f.mkdir(parents=True) or "done", block=0, maker=lambda a: 1)
+    rec = json.loads((runlist.set_aside(its, out, 0, runlist.runs_sha256(its), now="T") / "set_aside.json")
+                     .read_text(encoding="utf-8"))
+    assert rec["origin"] == {"a/e0": "stopped_run", "_derived/b.ndjson": "unknown"} and rec["cut_item"] == "b/e0"
+
+
+@pytest.mark.parametrize("last", ['{"type": "stopped", "item": "b/e0", "rea', '{"type": "item", "item": "b/e0", "res'])
+def test_set_aside_leaves_the_item_of_a_cut_last_line_unknown(tmp_path, last):
+    """code-reviewer: a cut last line may be the 'stopped' line of a folder from before the run, or the cut item's own
+    line after its capture ran: either way 'unknown'. A runlog ending with a whole 'stopped' line has no cut item."""
+    its = [{"name": n, "args": [], "after": None, "block": 0} for n in ("a/e0", "b/e0")]
+    sha = runlist.runs_sha256(its)
+    out = (tmp_path / "run").resolve()
+    (out / "a" / "e0").mkdir(parents=True)
+    (out / "b" / "e0").mkdir(parents=True)
+    head = {"type": "header", "block": 0, "runs_sha256": sha, "order": ["a/e0", "b/e0"]}
+    item = {"type": "item", "item": "a/e0", "result": "done", "detail": "done", "attempts": [{"folder": "a/e0"}]}
+    (out / "runlog.b0.ndjson").write_text(json.dumps(head) + "\n" + json.dumps(item) + "\n" + last)
+    rec = json.loads((runlist.set_aside(its, out, 0, sha, now="T") / "set_aside.json").read_text(encoding="utf-8"))
+    assert rec["origin"] == {"a/e0": "stopped_run", "b/e0": "unknown"} and rec["cut_item"] == "b/e0"

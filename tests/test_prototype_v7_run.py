@@ -346,6 +346,26 @@ def test_modifier_presses_not_counted(small):
     assert la.not_counted > 0 and la.times.size == small["h0"][0]["times"].size
 
 
+def test_repeats_are_left_out_and_counted_on_both_layers(small, record, tmp_path):
+    """The researcher's decision of 2026-11-06 (returns-v3.5): a down marked repeat stays out of the presses, as
+    before, and is counted per series and layer (cleaning.repeats_left_out). write_layers puts one auto-repeat on the
+    hook after every 70th press; a page line marked repeat (as Chrome marked one injected space) is added here."""
+    caps = vr.load_all(small["root"])
+    hk = caps["H1_idle"][0].layers["hook"]
+    n = small["h0"][0]["times"].size
+    assert hk.repeats == n // 70 and hk.times.size == n
+    assert record["cleaning"]["main"]["H1_idle"]["hook"]["repeats_left_out"] == sum(
+        cp.layers["hook"].repeats for cp in caps["H1_idle"] if cp.status == "captured")
+    assert record["cleaning"]["main"]["H1_idle"]["page"]["repeats_left_out"] == 0
+    rows = [{"type": "key", "t_ms": float(t), "h_ms": float(t), "kind": k, "repeat": k_rep, "trusted": True,
+             "composing": False, "in_box": True}
+            for t, k, k_rep in ((0.0, "alnum", False), (5.0, "space", True), (6.0, "space", False),
+                                (7.0, "modifier", True))]
+    write_ndjson(tmp_path / "page.ndjson", rows)
+    pg = vr.read_page(tmp_path / "page.ndjson")
+    assert pg.repeats == 1 and pg.kinds == ["alnum", "space"] and pg.not_counted == 0
+
+
 def _copy_tree(src: Path, dst: Path) -> Path:
     import shutil
     shutil.copytree(src, dst)

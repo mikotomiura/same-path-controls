@@ -21,6 +21,7 @@ import prototype_v7_plan as vp  # noqa: E402
 import prototype_v7_run as vr  # noqa: E402
 from capture import events as ev  # noqa: E402
 from capture import hooklog  # noqa: E402
+from capture import remote  # noqa: E402
 from capture import runlist as rl  # noqa: E402
 from test_prototype_v7_run import hook_key, write_layers, write_ndjson  # noqa: E402
 
@@ -51,6 +52,16 @@ def synthetic_persons(rng: np.random.Generator) -> tuple[list[tuple[np.ndarray, 
 
 def prompts() -> list[str]:
     return [f"Synthetic task {k}." for k in range(1, 11)] + [C7["data"]["prompts_added"][f"P{k}"] for k in range(11, 41)]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def no_remote_host():
+    """The runlist's check of the remote-desktop hosts reads this computer's process list on Windows. These tests are
+    of the plan, not of that check (tests/test_capture_v3_review.py), so it sees no host here (returns-v3.5: 17 of
+    them were red while the work PC's Chrome Remote Desktop host ran)."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(remote, "running", lambda: [])
+        yield
 
 
 @pytest.fixture(scope="module")
