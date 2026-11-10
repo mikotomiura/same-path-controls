@@ -123,3 +123,21 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   block require that no capture browser is running. No code of the repository was changed.
 - Whether a value can be affected: the stopped block 3 is not analysed (set aside). Block 3 run again is later in
   time than planned; blocks 2 and later ran at night and across days, not each started in the morning.
+
+## D7. 2026-11-10 / block 3 / three more starts of block 3 stopped by the guard; the cause found (a VS Code window over the capture window)
+
+- What happened: block 3 was started again at 02:53:07Z, 03:07:56Z and 03:15:28Z; each time the first item
+  (P_load/c050) was done and the guard of D6 stopped the chain at the second (M2_8B/t20, page recorded nothing,
+  visibilityState 'hidden'). A window log (C:\work\v7-chain\zwatch.ps1: process names and rectangles of the windows above
+  the capture window, no titles) and a display-state log (dispwatch.ps1: console/session display and monitor power on,
+  no lock) showed the cause: after the LLM's plan (about 2 min without input) the capture Chrome window opened behind a
+  VS Code window that covered its whole rectangle (the researcher's editor, which runs this session); Chrome marked the
+  page hidden and it recorded no press, although the window was brought to the front and focused before typing.
+  Synthetic captures started by hand (C:\work\v7-diag) did not show it.
+- What was done: each stopped start was set aside (stopped-20261110T030754Z, stopped-20261110T031526Z,
+  stopped-20261110T032020Z; to_move 5, moved 5 each; the cut item H1_idle/h46 with origin 'unknown' is judged made by
+  the stopped run). The VS Code windows were minimized and the guard now minimizes them every 15 s
+  (C:\work\v7-chain\minimize.ps1); block 3 was started again at 03:20:22Z and M2_8B/t20 was done with a visible page.
+  No code of the repository was changed.
+- Whether a value can be affected: no for the analysed captures (every page that recorded nothing is in a set-aside
+  folder); block 3 runs later than planned.
