@@ -101,3 +101,25 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   midnight JST (the same UTC date is expected; its start and end are in the session notes).
 - Whether a value can be affected: yes for L0, L1_idle and L1_load: fewer presses in e0 and e1 (fewer gaps per essay);
   e0's second attempt was typed right after the first was stopped, with no prompt shown again.
+
+## D6. 2026-11-09 to 2026-11-10 / blocks 1-3 / blocks run by an unattended chain at night and across days; block 3's pages hidden, stopped and set aside
+
+- What happened: blocks 2-6 were run one after another by a local script (C:\work\v7-chain\chain.ps1: footer, the
+  environment checks of the handoff's step 2, next block; no network). Its first start waited on a console window it
+  took for a running runlist, so block 2 began on 2026-11-09T03:29:38Z, about 56 h after block 1 ended
+  (2026-11-06T19:20:43Z). Block 2 ran 03:29:38Z-18:41:34Z (done 96, redone 0, failed 1, no_plan 0) and block 3 began
+  at 18:41:36Z, at night JST; both are blocks not started in the morning. From about 19:12Z (04:12 JST, when the site
+  network went down) the capture page reported document.visibilityState 'hidden' and recorded no press although the
+  hook saw every injected press (meta.json checks_after.page_recorded_nothing; status interrupted, then failed):
+  59 items had ended by 2026-11-10T02:45Z, done 8, redone 1, failed 50. Display-off and sleep were off, no screen saver
+  or lock screen, one monitor active, nothing over the window when looked at (02:4xZ). The cause is not established;
+  a capture Chrome left outside the chain's process tree was found and ended at the stop, after which a synthetic
+  capture to a separate folder (C:\work\v7-diag) was visible and recorded all presses.
+- What was done (the researcher's decisions of 2026-11-10): the chain's process tree was ended at 02:45Z (runlog.b3
+  without footer, cut in M3b/t11), block 3 was set aside with --set-aside into stopped-20261110T025218Z (to_move 128,
+  moved 128; M3b/t11 and _derived/M3b/t11.ndjson have origin 'unknown' and are judged made by the stopped run, the
+  item it was cut in), and block 3 is run again in full. A guard (C:\work\v7-chain\guard.ps1) now stops the chain at
+  the first capture whose page recorded nothing or when two capture browsers run at once, and the checks before each
+  block require that no capture browser is running. No code of the repository was changed.
+- Whether a value can be affected: the stopped block 3 is not analysed (set aside). Block 3 run again is later in
+  time than planned; blocks 2 and later ran at night and across days, not each started in the morning.
