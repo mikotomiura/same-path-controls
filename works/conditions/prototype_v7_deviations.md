@@ -141,3 +141,18 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   No code of the repository was changed.
 - Whether a value can be affected: no for the analysed captures (every page that recorded nothing is in a set-aside
   folder); block 3 runs later than planned.
+
+## D8. 2026-11-11 / blocks 4 and 5 / block 5 stopped by the guard at M2_14B/t38 (an Edge window over the capture window)
+
+- What happened: block 3 ended at 2026-11-10T13:48:54Z (done 98); block 4 ran 13:48:56Z to 23:41:18Z (done 95,
+  redone 0, failed 0, no_plan 0) and block 5 started at 23:41:21Z. At 2026-11-11T03:25:37Z the guard of D6 stopped the
+  chain: M2_14B/t38's page recorded nothing (status interrupted). The window log (zwatch.log) shows input at 03:23:12Z
+  with a maximized Edge window in the foreground; at 03:25:29Z, after the LLM's plan, the capture Chrome window opened
+  behind that Edge window (which covered its whole rectangle), as with the VS Code window of D7. Displays stayed on and
+  the session was not locked (dispwatch.log).
+- What was done: block 5 was set aside (stopped-20261111T032847Z; to_move 42, moved 42; the cut item H1_load/h12 with
+  origin 'unknown' is judged made by the stopped run, the others are 'stopped_run'). Edge was added to the windows the
+  guard minimizes every 15 s (C:\work\v7-chain\minimize.ps1, now Code and msedge) and block 5 was started again from its
+  first item. No code of the repository was changed.
+- Whether a value can be affected: no for the analysed captures (the page that recorded nothing is in the set-aside
+  folder); block 5 runs later than planned.
