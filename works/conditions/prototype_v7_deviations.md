@@ -156,3 +156,18 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   first item. No code of the repository was changed.
 - Whether a value can be affected: no for the analysed captures (the page that recorded nothing is in the set-aside
   folder); block 5 runs later than planned.
+
+## D9. 2026-11-11 / block 6 / the guard no longer stops the chain; it minimizes every large window
+
+- What happened: block 5, run again from 03:29:23Z, ended at 11:24:51Z (done 83, redone 0, failed 0, no_plan 0) and
+  block 6 started at 11:24:53Z. The network of the work PC is cut from 19:00Z, before block 6 is expected to end, and
+  nobody can then set aside and run again a block stopped by the guard (D6), which would mean running block 6 again
+  from its first item.
+- What was done: by the researcher's decision, at 11:56:05Z the guard was started again with -NoStop: a page that
+  records nothing is logged in chain.log and the chain is not stopped (the runlist runs the item again itself, and
+  a second failure is a failed item, a missing pair). The guard now minimizes every visible, uncloaked window of
+  600x600 or more of any process but the capture Chrome and Windows' shell (minimize.ps1 -All), not only VS Code and
+  Edge. The running chain and block 6 were not stopped. After the chain, post.ps1 runs step 7's analysis once if the
+  chain ends with all footers and git status is empty. No code of the repository was changed.
+- Whether a value can be affected: yes, possibly: an item of block 6 whose page records nothing twice is a failed
+  item (a missing pair) instead of a reason to run the block again; the count is read from runlog.b6 and chain.log.
