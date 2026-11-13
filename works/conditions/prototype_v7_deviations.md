@@ -171,3 +171,20 @@ Each entry: date (UTC) / block and items concerned / what happened / what was do
   chain ends with all footers and git status is empty. No code of the repository was changed.
 - Whether a value can be affected: yes, possibly: an item of block 6 whose page records nothing twice is a failed
   item (a missing pair) instead of a reason to run the block again; the count is read from runlog.b6 and chain.log.
+
+## D10. 2026-11-11 / block 6 and all blocks / the end of the captures; the analysis run by post.ps1; the gaps failures counted
+
+- What happened: block 6 ran 2026-11-11T11:24:53Z to 19:23:16Z (done 82, redone 0, failed 0, no_plan 0); the guard in
+  -NoStop mode (D9) logged no page that recorded nothing and minimized one Edge window (19:12:55Z). The chain ended
+  with all footers ('chain done', 19:23:16Z). post.ps1 found the 7 runlog footers, an empty git status and no
+  results\prototype_v7, ran `uv run python works/prototype_v7_run.py --captures C:\work\v7-captures --plan
+  C:\work\v7-plan` at 19:23:37Z (offline, UV_OFFLINE=1) and it ended with exit 0 at 19:34:25Z.
+  Counts over the analysed runlogs: b0 done 3 + redone 1; b1 96; b2 96 + failed 1; b3 98; b4 95; b5 83; b6 82.
+  The only failed capture is M2_14B/t02 (block 2): Ollama answered HTTP 400 to the M2 gaps request because its JSON
+  schema (minItems = maxItems = the essay's length, about 2000 or more) exceeds llama.cpp's grammar repetition limit;
+  the redo had the same seed and failed the same way. No other M2 item failed this way (M2_8B 40/40 and M2_14B 39/40
+  captured).
+- What was done: nothing was fixed (the researcher's decision: go on without a code fix and count the cases). The
+  failed item is a missing pair (record.json failures: M2_14B failed_capture 1). The question whether to fix the gaps
+  request is in questions.md (item 5).
+- Whether a value can be affected: yes: M2_14B has 39 pairs instead of 40.
