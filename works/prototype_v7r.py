@@ -57,7 +57,9 @@ def sizes(cap) -> dict:
             "plan_largest_gap_ms": float(pg.max()) if pg is not None and pg.size else None,
             "plan_share_at_median": (float(np.mean(np.abs(pg - med) <= 1e-9)) if med is not None else None),
             "hook_median_gap_ms": float(np.median(rh.gaps)) if rh and rh.gaps.size else None,
-            "page_median_gap_ms": float(np.median(rp.gaps)) if rp and rp.gaps.size else None}
+            "page_median_gap_ms": float(np.median(rp.gaps)) if rp and rp.gaps.size else None,
+            "hook_dropped_equal_times": rh.dropped if rh else None,
+            "page_dropped_equal_times": rp.dropped if rp else None}
 
 
 def m2_sizes(caps: list) -> dict:
