@@ -28,8 +28,10 @@ import prototype_v7_run as vr  # noqa: E402
 COND = ROOT / "works" / "conditions" / "prototype_v7q.json"
 OUT = ROOT / "results" / "prototype_v7q" / "record.json"
 KEY = [20261113, 7, 2]
+BASE_COMMIT = "a6fa5cae45579c2b4cc95ccb938eab6ea622310e"
 BINS = [0.0, 1.0, 5.0, 20.0, 50.0, 150.0, np.inf]
 BIN_NAMES = ["0-1", "1-5", "5-20", "20-50", "50-150", "150+"]
+V7_CODE = ["works/prototype_v7_run.py", "works/prototype_v7.py", "works/prototype_v6.py", "works/_common.py"]
 PAGE_SERIES = ("H1_idle", "H1_load", "H1_rep", "L0", "L1_idle", "L1_load", *vr.MACHINE, "P_idle", "P_load",
                "P_nohook")
 
@@ -65,6 +67,11 @@ def hook_injected_repeats(path: Path) -> int:
 
 
 def bin_of(x: float) -> str:
+    """Closed-left bins; a negative gap (a time inversion in capture order) or a non-finite one is named apart."""
+    if not np.isfinite(x):
+        return "not finite"
+    if x < 0:
+        return "negative"
     return BIN_NAMES[int(np.searchsorted(BINS, x, side="right")) - 1]
 
 
@@ -148,7 +155,9 @@ def readings_kept(caps_kept: dict, s_h0: dict, sc) -> dict:
         for d in vr.DETECTORS:
             jb, ja, missing = pair_counts(d, sp[d], sr[d])
             b, c, n = v7.flips(jb, ja)
-            row = {"b": b, "c": c, "n": n, "missing": missing, "plan_machine": int(jb.sum()),
+            without_plan = sum(1 for cp in caps if cp.status == "no_plan")
+            row = {"b": b, "c": c, "n": n, "missing": missing - without_plan, "without_plan": without_plan,
+                   "plan_machine": int(jb.sum()),
                    "recorded_machine": int(ja.sum())}
             if n:
                 mp = v7.machine_path_reading(jb, ja, np.arange(n), [*KEY, vr.DET_IDX[d], si])
@@ -176,8 +185,10 @@ def m2_groups(caps: list, caps_kept: list) -> dict:
         if dl["plan"] is None:
             grp = "plan not judged"
         elif dl["plan"] > v7.DELTA_T:
-            grp = "stays human" if dl["page"] is None or dl["page"] > v7.DELTA_T else "plan human, page machine"
-        elif dl["page"] is not None and dl["page"] > v7.DELTA_T:
+            grp = "stays human"   # the conditions' group: every plan judged 'human', whatever the page
+        elif dl["page"] is None:
+            grp = "page not judged"
+        elif dl["page"] > v7.DELTA_T:
             grp = "flips"
         else:
             grp = "stays machine"
@@ -216,6 +227,8 @@ def main(argv: list[str] | None = None) -> None:
              "works/conditions/prototype_v6.json"]
     cm.same_as_head([ROOT / p for p in paths])
     state = cm.git_state(paths)
+    if cm.git("diff", "--name-only", BASE_COMMIT, "HEAD", "--", *V7_CODE, "works/conditions/prototype_v7.json"):
+        raise SystemExit(f"v7's analysis code or conditions differ from {BASE_COMMIT}")
     raw_q = COND.read_bytes()
     cq = json.loads(raw_q)
     _, c7 = cm.load_conditions(vr.COND)
@@ -237,10 +250,17 @@ def main(argv: list[str] | None = None) -> None:
     rec = diagnose(caps, s_h0, sc)
     rec["persons"] = {"replay_H_sha256": vr.sha_ids(ps.h), "n": len(ps.h)}
     rec["provenance"] = {"run_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), **state,
-                         "conditions_sha256": hashlib.sha256(raw_q).hexdigest()}
+                         "conditions_sha256": hashlib.sha256(raw_q).hexdigest(),
+                         "code_sha256": {p: cm.sha256(ROOT / p) for p in [*V7_CODE, "works/prototype_v7q.py"]},
+                         "data_sha256": {name: sha for name, (_, sha) in files.items()}}
     rec = vr.to_json(rec)
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(rec, indent=1) + "\n")
+    tmp = OUT.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rec, indent=1, allow_nan=False) + "\n", encoding="utf-8")
+    if OUT.exists():
+        tmp.unlink()
+        raise SystemExit(f"{OUT} appeared during the run; refusing to overwrite")
+    tmp.rename(OUT)
     print(f"written {OUT} (sha256 {hashlib.sha256(OUT.read_bytes()).hexdigest()})")
 
 

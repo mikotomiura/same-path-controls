@@ -88,6 +88,7 @@ def test_record_holds_no_series(flagged):
 def test_bins_are_closed_left():
     assert vq.bin_of(0.0) == "0-1" and vq.bin_of(1.0) == "1-5" and vq.bin_of(149.9) == "50-150"
     assert vq.bin_of(150.0) == "150+"
+    assert vq.bin_of(-1.0) == "negative" and vq.bin_of(float("nan")) == "not finite"
 
 
 def _cap(plan_t: np.ndarray, page_t: np.ndarray) -> vr.Capture:
@@ -108,3 +109,15 @@ def test_m2_groups_tell_flips_from_stays():
     g = vq.m2_groups(caps, caps)
     assert g["flips"]["sessions"] == 1 and g["stays machine"]["sessions"] == 1
     assert g["plan not judged"]["sessions"] == 1
+
+
+def test_m2_groups_put_every_human_plan_in_stays_human_and_name_a_page_without_judgment():
+    """The conditions' groups: a plan judged 'human' is 'stays human' whatever the page; a 'machine' plan whose page
+    has no judgment (here a page of one press) is 'page not judged', not 'stays machine'."""
+    rng = np.random.default_rng(4)
+    plan_h = np.cumsum(np.concatenate([[0.0], rng.uniform(1, 60, 199)]))
+    plan_m = np.arange(200) * 20.0
+    caps = [_cap(plan_h, plan_m.copy()), _cap(plan_h, plan_h.copy()), _cap(plan_m, np.zeros(1))]
+    g = vq.m2_groups(caps, caps)
+    assert g["stays human"]["sessions"] == 2 and g["page not judged"]["sessions"] == 1
+    assert "stays machine" not in g and "flips" not in g
