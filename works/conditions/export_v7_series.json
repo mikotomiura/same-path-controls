@@ -14,7 +14,7 @@
   },
   "content": {
     "layers": "plan (events.ndjson, or schedule.ndjson for M1), hook (hook.ndjson; absent for P_nohook) and page (page.ndjson), read by prototype_v7_run.load_all: counted kinds only (alnum, space, end, enter, backspace, delete, other), auto-repeats left out, in capture order, times in ms from the layer's first counted press, not sorted and with equal times kept (the analysis's cleaning is not applied)",
-    "rows": "one CSV per series, columns series, unit, layer, i, kind, t_ms; t_ms written with 6 decimals (whole ns of the hook while its clock, counted from boot, stays below about 100 days; a test checks 11 days)",
+    "rows": "one CSV per series, columns series, unit, layer, i, kind, t_ms; t_ms written with 6 decimals (whole ns of the hook while its clock, counted from boot, stays below 2^32 ms, about 49.7 days: measured on 2026-11-15 with v7's reading, no mismatch in 200,000 times at 49 days and mismatches of one ns at 60 days; a test checks 11 days)",
     "units": "the unit names of the runlist (h00.., t00.., c005..): the index in the draw order of replay_H for H1, the text index for M0-M3 (text t is prompt P(t+1)), the control's gap in ms for P. No KUPA identifier",
     "status": "status.csv: series, unit, status (captured / failed / no_plan), redone (true or false), plan (yes / no: whether plan rows are released). A failed capture's plan is released when the analysis keeps one: as in check_plans, a failed M1 capture whose schedule cannot be recomputed from llm.ndjson has no plan (v7's record: failed_without_plan). A no_plan unit has no row in the series file",
     "manifest": "manifest.json: per file its SHA-256, rows and presses per layer; provenance (run time, HEAD, dirty, conditions and code SHA-256)"
