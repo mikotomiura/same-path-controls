@@ -1,0 +1,11 @@
+﻿
+Algorithm Hash                                                             Path                                        
+--------- ----                                                             ----                                        
+SHA256    119C1720BF70CB307EFC2A074E8EE9F5AC23C92DA67A2FA3D2B68A3BF6E634C4 C:\work\v5-out\v7-chain-scripts\chain.ps1   
+SHA256    E9F2EFBF4EE2C737000FA746CA1944F3166073FA9AB6E3AE65B2CC2C3C9850D5 C:\work\v5-out\v7-chain-scripts\dispwatch...
+SHA256    6693985CE117AEFE71A2BB747699D2B69D80A9F27ED580D62EC83837F062470C C:\work\v5-out\v7-chain-scripts\guard.ps1   
+SHA256    65C121AC322F48EFC0F2F839967F328E978A17C60F44FDFCC6414CF635A3FBDD C:\work\v5-out\v7-chain-scripts\minimize.ps1
+SHA256    246B04975A426EA289E24A906C69A9FEE190494F545857EE20D1FDD73DF47340 C:\work\v5-out\v7-chain-scripts\post.ps1    
+SHA256    C8DB18AC249AB5491B73802A058E138106F66DF98D514C65971E4026F6F00A30 C:\work\v5-out\v7-chain-scripts\zwatch.ps1  
+
+
