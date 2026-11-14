@@ -35,6 +35,20 @@ def test_hook_kinds_from_virtual_keys_and_shift():
                  "nonchar", "nonchar"]
 
 
+def test_hook_shift_space_is_space():
+    # Dev.3: with Shift held (as with Caps Lock on), Space types a space and the page counts it as space; VkKeyScanW
+    # maps ' ' to Space without Shift only, so the table has no (Space, shift) entry
+    ev = [raw(0xA0), raw(0x20), raw(0x20, False), raw(0x14), raw(0x20), raw(0xA0, False), raw(0x20)]
+    assert [r["kind"] for r in hooklog.classify(ev, TABLE) if r["down"]] == ["modifier", "space", "modifier", "space",
+                                                                             "space"]
+    # other keys with no shifted character stay as they were (shift+'.' and shift+'0' have no entry in TABLE)
+    ev = [raw(0xA1), raw(0xBE), raw(0x30), raw(0xA1, False)]
+    assert [r["kind"] for r in hooklog.classify(ev, TABLE) if r["down"]] == ["modifier", "nonchar", "nonchar"]
+    # a layout table whose Space is shifted too (not seen; kept as the table says)
+    assert [r["kind"] for r in hooklog.classify([raw(0xA0), raw(0x20)], {**TABLE, (0x20, True): "_"})
+            if r["down"]] == ["modifier", "other"]
+
+
 def test_hook_kinds_of_vk_packet_and_ctrl_combinations():
     ev = [raw(0xE7, scan=ord("q")), raw(0xE7, scan=ord("?")), raw(0xE7, scan=ord(" ")),
           raw(0xA2), raw(0x43), raw(0x43, False), raw(0xA2, False)]

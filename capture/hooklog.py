@@ -98,6 +98,10 @@ class Classifier:
             kind = events.kind_of_char(NUMPAD[vk])
         else:
             c = self.table.get((vk, shift))
+            if c is None and shift and self.table.get((vk, False)) == " ":
+                # Shift with Space types a space and the page counts it as one; VkKeyScanW maps ' ' to Space without
+                # Shift only (Dev.3 of v7: Space typed with Shift held under Caps Lock was 'nonchar' on the hook)
+                c = " "
             kind = events.kind_of_char(c) if c is not None else "nonchar"
         if down:
             held.add(vk)
