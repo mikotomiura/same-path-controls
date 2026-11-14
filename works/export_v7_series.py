@@ -14,6 +14,8 @@ import datetime as dt
 import hashlib
 import io
 import json
+import math
+import re
 import sys
 from pathlib import Path
 
@@ -32,10 +34,37 @@ NOT_KUPA_DERIVED = ("M0", "M1_8B", "M1_14B", "M1_replay_8B", "M1_replay_14B", "M
                     "P_idle", "P_load", "P_nohook")
 NOT_RELEASED = ("L0", "L1_idle", "L1_load")
 COLUMNS = ("series", "unit", "layer", "i", "kind", "t_ms")
+STATUS_COLUMNS = ("series", "unit", "status", "redone", "plan")
+STATUSES = ("captured", "failed", "no_plan")
+T_MS = re.compile(r"-?[0-9]+\.[0-9]{6}")
 
 
 def unit_name(series: str, unit: int) -> str:
     return vr.CAPTURE_LAYOUT[series].format(i=unit)
+
+
+def plan_as_analysis(cap):
+    """The plan as v7's analysis keeps it: check_plans sets a failed M1 capture's plan to None when its schedule
+    cannot be recomputed from llm.ndjson (counted as failed_without_plan); the same rule is applied here."""
+    if cap.plan is None or cap.status != "failed" or cap.series not in ("M1_8B", "M1_14B"):
+        return cap.plan
+    try:
+        arr, toks, end, _ = vr.read_llm_stream(cap.folder / "llm.ndjson", unfinished=True)
+        vr.m1_schedule(arr, toks, end)
+    except (vr.RunStop, ValueError):
+        return None
+    return cap.plan
+
+
+def check_capture(cap) -> None:
+    """The status and layers load_all gives (fail-closed if v7's reader ever gives something else)."""
+    if cap.status not in STATUSES:
+        raise SystemExit(f"{cap.series}/{cap.unit}: status {cap.status!r}")
+    want = (set() if cap.status != "captured" else {"page"} if cap.series == "P_nohook" else {"hook", "page"})
+    if set(cap.layers) != want:
+        raise SystemExit(f"{cap.series}/{cap.unit}: layers {sorted(cap.layers)} for status {cap.status}")
+    if cap.status == "no_plan" and cap.plan is not None:
+        raise SystemExit(f"{cap.series}/{cap.unit}: no_plan with a plan")
 
 
 def rows_of(cap) -> list[tuple]:
@@ -43,8 +72,9 @@ def rows_of(cap) -> list[tuple]:
     u = unit_name(cap.series, cap.unit)
     out = []
     layers = []
-    if cap.plan is not None:
-        layers.append(("plan", cap.plan.times, cap.plan.kinds))
+    plan = plan_as_analysis(cap)
+    if plan is not None:
+        layers.append(("plan", plan.times, plan.kinds))
     for la in ("hook", "page"):
         if la in cap.layers:
             layers.append((la, cap.layers[la].times, cap.layers[la].kinds))
@@ -54,6 +84,8 @@ def rows_of(cap) -> list[tuple]:
         for i, (t, k) in enumerate(zip(times, kinds)):
             if k not in vr.COUNTED_KINDS:
                 raise SystemExit(f"{cap.series}/{u} {la}: kind {k!r} outside the counted kinds")
+            if not math.isfinite(float(t)):
+                raise SystemExit(f"{cap.series}/{u} {la}: a time is not finite")
             out.append((cap.series, u, la, i, k, f"{float(t):.6f}"))
     return out
 
@@ -76,11 +108,38 @@ def build(caps: dict) -> dict[str, bytes]:
         for s_ in series:
             rows = []
             for cap in caps[s_]:
-                status.append((s_, unit_name(s_, cap.unit), cap.status, "true" if cap.redone else "false"))
-                rows.extend(rows_of(cap))
+                check_capture(cap)
+                r = rows_of(cap)
+                has_plan = "yes" if any(x[2] == "plan" for x in r) else "no"
+                status.append((s_, unit_name(s_, cap.unit), cap.status, "true" if cap.redone else "false", has_plan))
+                rows.extend(r)
             files[f"{group}/{s_}.csv"] = csv_bytes(rows, COLUMNS)
-    files["status.csv"] = csv_bytes(status, ("series", "unit", "status", "redone"))
+    files["status.csv"] = csv_bytes(status, STATUS_COLUMNS)
+    check_files(files)
     return files
+
+
+def check_files(files: dict[str, bytes]) -> None:
+    """Every cell of every file is one of the allowed values or forms (an allow-list, not a search for what must not
+    be there): series names of the release, unit names of the layout, layers, integers, kinds, times."""
+    released = (*KUPA_DERIVED, *NOT_KUPA_DERIVED)
+    units = {s_: re.compile(re.escape(vr.CAPTURE_LAYOUT[s_]).replace(r"\{i:02d\}", "[0-9]{2}")
+                            .replace(r"\{i:03d\}", "[0-9]{3}")) for s_ in released}
+    for name, b in files.items():
+        rows = list(csv.reader(io.StringIO(b.decode("utf-8"))))
+        head, body = tuple(rows[0]), rows[1:]
+        if name == "status.csv":
+            ok = head == STATUS_COLUMNS and all(
+                len(r) == 5 and r[0] in released and units[r[0]].fullmatch(r[1]) and r[2] in STATUSES
+                and r[3] in ("true", "false") and r[4] in ("yes", "no") for r in body)
+        else:
+            s_ = name.split("/")[-1].removesuffix(".csv")
+            want_dir = "kupa-derived" if s_ in KUPA_DERIVED else "not-kupa-derived"
+            ok = name == f"{want_dir}/{s_}.csv" and s_ in released and head == COLUMNS and all(
+                len(r) == 6 and r[0] == s_ and units[s_].fullmatch(r[1]) and r[2] in ("plan", "hook", "page")
+                and r[3].isdigit() and r[4] in vr.COUNTED_KINDS and T_MS.fullmatch(r[5]) for r in body)
+        if not ok:
+            raise SystemExit(f"{name}: a cell outside the allowed values or forms")
 
 
 def manifest_entries(files: dict[str, bytes]) -> dict:
@@ -99,8 +158,10 @@ def write_all(out: Path, files: dict[str, bytes], manifest: dict) -> None:
     if out.exists():
         raise SystemExit(f"{out} exists; refusing to overwrite")
     tmp = out.with_name(out.name + ".tmp")
-    if tmp.exists():
-        raise SystemExit(f"{tmp} exists (a run stopped half-way?); move it aside first")
+    try:
+        tmp.mkdir(parents=True, exist_ok=False)   # taken exclusively: a second run stops here
+    except FileExistsError:
+        raise SystemExit(f"{tmp} exists (a run stopped half-way?); move it aside first") from None
     for name, b in files.items():
         p = tmp / name
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -117,8 +178,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("usage: python works/export_v7_series.py --captures <folder of the production captures>")
     if OUT.exists():
         raise SystemExit(f"{OUT} exists; refusing to overwrite")
-    paths = ["works/conditions/export_v7_series.json", "works/export_v7_series.py", *CODE,
-             "works/conditions/prototype_v7.json"]
+    paths = ["works/conditions/export_v7_series.json", "works/export_v7_series.py",
+             *dict.fromkeys([*CODE, *vr.CODE]), "works/conditions/prototype_v7.json"]
     cm.same_as_head([ROOT / p for p in paths])
     state = cm.git_state(paths)
     if cm.git("diff", "--name-only", BASE_COMMIT, "HEAD", "--", *vr.CODE, "works/conditions/prototype_v7.json"):
@@ -131,7 +192,8 @@ def main(argv: list[str] | None = None) -> None:
     manifest = {"files": manifest_entries(files),
                 "provenance": {"run_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), **state,
                                "conditions_sha256": hashlib.sha256(raw).hexdigest(),
-                               "code_sha256": {p: cm.sha256(ROOT / p) for p in [*CODE, "works/export_v7_series.py"]}}}
+                               "code_sha256": {p: cm.sha256(ROOT / p)
+                                               for p in [*dict.fromkeys([*CODE, *vr.CODE]), "works/export_v7_series.py"]}}}
     write_all(OUT, files, manifest)
     for name, e in manifest["files"].items():
         print(f"{e['sha256']}  {name}  rows {e['rows']}")

@@ -79,9 +79,9 @@ def test_failed_no_plan_and_no_hook():
     pn = _read(files["not-kupa-derived/P_nohook.csv"])[1:]
     assert {r[2] for r in pn} == {"plan", "page"} and {r[1] for r in pn} == {"c005"}
     st = _read(files["status.csv"])
-    assert st[0] == ["series", "unit", "status", "redone"]
-    assert ["M2_14B", "t01", "failed", "false"] in st and ["M1_8B", "t01", "no_plan", "false"] in st
-    assert ["M0", "t01", "captured", "true"] in st and ["M0", "t00", "captured", "false"] in st
+    assert st[0] == ["series", "unit", "status", "redone", "plan"]
+    assert ["M2_14B", "t01", "failed", "false", "yes"] in st and ["M1_8B", "t01", "no_plan", "false", "no"] in st
+    assert ["M0", "t01", "captured", "true", "yes"] in st and ["M0", "t00", "captured", "false", "yes"] in st
     assert len(st) - 1 == sum(len(_caps()[s_]) for s_ in (*ex.KUPA_DERIVED, *ex.NOT_KUPA_DERIVED))
 
 
@@ -118,3 +118,90 @@ def test_manifest_and_writing(tmp_path):
 def test_main_refuses_without_captures_argument():
     with pytest.raises(SystemExit, match="usage"):
         ex.main([])
+
+
+def _llm(folder: Path, lines: list[dict]) -> None:
+    folder.mkdir(parents=True)
+    (folder / "llm.ndjson").write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
+
+
+def test_a_failed_m1_keeps_its_plan_only_when_the_analysis_can_recompute_it(tmp_path):
+    """check_plans (v7) sets a failed M1's plan to None when llm.ndjson cannot give the schedule (failed_without_plan);
+    the export does the same."""
+    caps = _caps()
+    bad, good = _cap("M1_14B", 0, status="failed"), _cap("M1_14B", 1, status="failed")
+    bad.folder, good.folder = tmp_path / "bad", tmp_path / "good"
+    _llm(bad.folder, [{"type": "error", "error": "x"}])
+    _llm(good.folder, [{"type": "chunk", "recv_ns": 1_000_000 * (k + 1), "token": "ab", "done": False}
+                       for k in range(3)])   # unfinished: no done line, the last token is left out
+    caps["M1_14B"] = [bad, good]
+    files = ex.build(caps)
+    m1 = _read(files["not-kupa-derived/M1_14B.csv"])[1:]
+    assert {r[1] for r in m1 if r[2] == "plan"} == {"t01"}
+    st = _read(files["status.csv"])
+    assert ["M1_14B", "t00", "failed", "false", "no"] in st and ["M1_14B", "t01", "failed", "false", "yes"] in st
+    # captured M1 and failed M2 are not touched by the rule
+    assert ex.plan_as_analysis(_caps()["M2_14B"][1]) is not None
+
+
+def test_status_and_layers_outside_load_alls_forms_stop():
+    for cap, msg in [(_cap("M0", 0, status="odd"), "status 'odd'"), (_cap("P_nohook", 5), "layers"),
+                     (_cap("M0", 0, hook=False), "layers")]:
+        caps = _caps()
+        caps[cap.series][0] = cap
+        with pytest.raises(SystemExit, match=msg):
+            ex.build(caps)
+    c = _cap("M0", 0, status="no_plan")
+    c.plan = vr.Plan(np.zeros(2), ["alnum"] * 2, ["a"] * 2)
+    with pytest.raises(SystemExit, match="no_plan with a plan"):
+        ex.check_capture(c)
+
+
+def test_lengths_and_non_finite_times_stop():
+    c = _cap("M0", 0)
+    c.layers["page"] = vr.Layer(np.arange(3.0), ["alnum"] * 2, 0, 0)
+    with pytest.raises(SystemExit, match="3 times but 2 kinds"):
+        ex.rows_of(c)
+    c = _cap("M0", 0)
+    c.layers["page"].times[2] = np.inf
+    with pytest.raises(SystemExit, match="not finite"):
+        ex.rows_of(c)
+
+
+def test_the_allow_list_stops_any_other_cell():
+    """Positive controls: a 60-character string, a key name, a KUPA-like id and a time in another form, each placed in
+    a copy of a valid file, are stopped; the valid files pass."""
+    files = ex.build(_caps())
+    ex.check_files(files)
+    good = files["kupa-derived/H1_idle.csv"].decode("utf-8").splitlines()
+    for bad_row in ["H1_idle,h00,page,0,alnum," + "x" * 60, "H1_idle,h00,page,0,KeyA,1.000000",
+                    "H1_idle,P0123,page,0,alnum,1.000000", "H1_idle,h00,page,0,alnum,1.5",
+                    "H1_idle,h00,page,0,alnum,1.000000,extra", "M0,t00,page,0,alnum,1.000000"]:
+        bad = dict(files)
+        bad["kupa-derived/H1_idle.csv"] = ("\n".join([*good, bad_row]) + "\n").encode("utf-8")
+        with pytest.raises(SystemExit, match="outside the allowed"):
+            ex.check_files(bad)
+    bad = dict(files)
+    bad["not-kupa-derived/H1_idle.csv"] = bad.pop("kupa-derived/H1_idle.csv")   # a KUPA series under CC BY
+    with pytest.raises(SystemExit, match="outside the allowed"):
+        ex.check_files(bad)
+    caps = _caps()
+    caps["H1_idle"][1] = _cap("H1_idle", 1000)   # a unit name outside the layout: build itself runs the check
+    with pytest.raises(SystemExit, match="outside the allowed"):
+        ex.build(caps)
+    bad = dict(files)
+    bad["status.csv"] = files["status.csv"] + b"L0,e0,captured,false,yes\n"
+    with pytest.raises(SystemExit, match="outside the allowed"):
+        ex.check_files(bad)
+
+
+def test_times_from_large_ns_keep_the_ns():
+    """A hook time as v7 reads it (t_ns / 1e6, minus the first) keeps whole ns at 6 decimals for a clock of about
+    11 days (QPC counts from boot)."""
+    t0 = 950_400_000_000_000   # 11 days in ns
+    ns = np.array([t0, t0 + 123_456_789, t0 + 987_654_321_987])
+    lay = vr._layer(list(ns / 1e6), ["alnum"] * 3, 0)
+    c = _cap("M0", 0, n=3, kinds=["alnum"] * 3)
+    c.layers["hook"] = lay
+    rows = [r for r in ex.rows_of(c) if r[2] == "hook"]
+    assert [r[5] for r in rows] == ["0.000000", "123.456789", "987654.321987"]
