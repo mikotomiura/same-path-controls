@@ -36,11 +36,19 @@ def test_hook_kinds_from_virtual_keys_and_shift():
 
 
 def test_hook_shift_space_is_space():
-    # Dev.3: with Shift held (as with Caps Lock on), Space types a space and the page counts it as space; VkKeyScanW
-    # maps ' ' to Space without Shift only, so the table has no (Space, shift) entry
+    # Dev.3: in v7's block 0, Space was typed with Shift held (Caps Lock was on); the page counts Shift+Space as space.
+    # VkKeyScanW maps ' ' to Space without Shift only, so the table has no (Space, shift) entry. The classifier looks
+    # at Shift only: Caps Lock (0x14) is a modifier and does not count as Shift
     ev = [raw(0xA0), raw(0x20), raw(0x20, False), raw(0x14), raw(0x20), raw(0xA0, False), raw(0x20)]
     assert [r["kind"] for r in hooklog.classify(ev, TABLE) if r["down"]] == ["modifier", "space", "modifier", "space",
                                                                              "space"]
+    # the up of a Space released while Shift is held is space too, and so is one released after Shift
+    ev = [raw(0xA0), raw(0x20), raw(0x20, False), raw(0x20), raw(0xA0, False), raw(0x20, False)]
+    ups = [r["kind"] for r in hooklog.classify(ev, TABLE) if not r["down"]]
+    assert ups == ["space", "modifier", "space"]
+    # only Space: another key typing ' ' without Shift in some table (not seen) keeps the table's answer
+    assert [r["kind"] for r in hooklog.classify([raw(0xA0), raw(0x99)], {**TABLE, (0x99, False): " "})
+            if r["down"]] == ["modifier", "nonchar"]
     # other keys with no shifted character stay as they were (shift+'.' and shift+'0' have no entry in TABLE)
     ev = [raw(0xA1), raw(0xBE), raw(0x30), raw(0xA1, False)]
     assert [r["kind"] for r in hooklog.classify(ev, TABLE) if r["down"]] == ["modifier", "nonchar", "nonchar"]

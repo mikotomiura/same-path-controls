@@ -39,6 +39,7 @@ LLKHF_INJECTED = 0x10
 VK_PACKET = 0xE7
 VK_ESCAPE, VK_END = 0x1B, 0x23
 VK_RETURN, VK_BACK, VK_DELETE = 0x0D, 0x08, 0x2E
+VK_SPACE = 0x20
 SHIFT = {0x10, 0xA0, 0xA1}
 CTRL = {0x11, 0xA2, 0xA3}
 ALT = {0x12, 0xA4, 0xA5}
@@ -98,7 +99,7 @@ class Classifier:
             kind = events.kind_of_char(NUMPAD[vk])
         else:
             c = self.table.get((vk, shift))
-            if c is None and shift and self.table.get((vk, False)) == " ":
+            if c is None and shift and vk == VK_SPACE and self.table.get((vk, False)) == " ":
                 # Shift with Space types a space and the page counts it as one; VkKeyScanW maps ' ' to Space without
                 # Shift only (Dev.3 of v7: Space typed with Shift held under Caps Lock was 'nonchar' on the hook)
                 c = " "
