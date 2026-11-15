@@ -617,6 +617,12 @@ def grid_share(cap: run7.Capture) -> float | None:
     return float(np.mean(np.abs(g - np.round(g)) <= 1e-6))
 
 
+def grid_share_summary(shares: list[float | None]) -> float | None:
+    """The share of captures with at least 0.99 of their page gaps on the 1 ms grid; None below MIN_SUMMARY."""
+    x = [v for v in shares if v is not None]
+    return float(np.mean([v >= 0.99 for v in x])) if len(x) >= run7.MIN_SUMMARY else None
+
+
 def series_from_caps(name: str, caps: list[run7.Capture], browser: str, base_override: list[Sess | None] | None = None
                      ) -> Series:
     base = base_override if base_override is not None else [from_plan(c.plan) for c in caps]
@@ -633,7 +639,7 @@ def kind_loss(cap: run7.Capture, layer: str) -> tuple[int, int] | None:
     return v7.kind_edit_distance(list(cap.plan.kinds), list(cap.layers[layer].kinds)), int(cap.plan.times.size)
 
 
-def check_kinds(name: str, caps: list[run7.Capture]) -> dict:
+def check_kinds(name: str, caps: list[run7.Capture], per_capture: bool = False) -> dict:
     """amendment R8: per layer, the share of planned presses lost or changed in kind over the series' captures; the
     run stops above KIND_LOSS_MAX (e.g. a browser that gives an injected character no key name drops it from the
     counted presses, and the detectors would judge a shorter series)."""
@@ -643,7 +649,10 @@ def check_kinds(name: str, caps: list[run7.Capture]) -> dict:
         if not got:
             continue
         share = sum(d for d, _ in got) / max(1, sum(n for _, n in got))
-        out[la] = {"captures": len(got), "edit_share": share,
+        worst = max(d / max(1, n) for d, n in got)
+        if per_capture:   # amendment R16: a known gap's one capture is one point of path_sd
+            share = worst
+        out[la] = {"captures": len(got), "edit_share": share, "edit_share_max_capture": worst,
                    "not_counted": int(sum(c.layers[la].not_counted for c in caps
                                           if c.status == "captured" and la in c.layers))}
         if share > KIND_LOSS_MAX:
@@ -666,6 +675,12 @@ def check_browsers(caps: list[run7.Capture], browser: str) -> str | None:
     if len(seen) > 1:
         raise RunStop(f"{browser} items on more than one version: {sorted(map(str, seen))}")
     return next(iter(seen), None)
+
+
+def check_one_firefox(known: str | None, series_version: str | None) -> None:
+    """amendment R3/R17: the known gaps and the series of Firefox ran on one version."""
+    if known is None or series_version is None or known != series_version:
+        raise RunStop(f"Firefox's known gaps ran on {known}, its series on {series_version}: not one version")
 
 
 def unit_caps(root: Path, runlog: dict[str, str], series: str, units: range, fmt: str) -> list[run7.Capture]:
@@ -738,7 +753,7 @@ def read_series(v7caps: dict, v7s_root: Path, runlog: dict[str, str], h0: list[S
     versions["F_H1"] = check_browsers(caps, "firefox")
     if kinds_out is not None:
         kinds_out["F_H1"] = check_kinds("F_H1", caps)
-        kinds_out["firefox_version"] = next(iter({v for k, v in versions.items() if k.startswith("F_") and v}), None)
+        kinds_out["firefox_version"] = next(iter(ff), None)
     ff = {v for k, v in versions.items() if k.startswith("F_") and v is not None}
     if len(ff) > 1:
         raise RunStop(f"Firefox series on more than one version: {sorted(ff)}")
@@ -787,9 +802,11 @@ def known_tables(v7caps: dict, v7s_root: Path, runlog: dict[str, str]) -> tuple[
     for ms in splan.K_NOHOOK_MS:
         add(f"F_K_nohook/{ms}", "firefox", "page", load_item(v7s_root, runlog, f"F_K_nohook/c{ms:03d}", hook=False),
             ms, False)
+    versions = {}
     for b, cs in k_caps.items():
-        check_browsers(cs, b)
-        meas[f"kinds/{b}"] = check_kinds(f"known gaps in {b}", cs)
+        versions[b] = check_browsers(cs, b)
+        meas[f"kinds/{b}"] = check_kinds(f"known gaps in {b}", cs, per_capture=True)
+    meas["firefox_version_known_gaps"] = versions.get("firefox")
     tables = {f"{b}/{la}": t for (b, la), t in table.items()}
     check_known(tables)
     return meas, tables
@@ -888,7 +905,8 @@ def criterion_cells(series: dict[str, Series], scores: dict, margins: dict, coun
                               "observed_bc": [obs["b"], obs["c"], obs["n"]],
                               "predicted_bc": [prd["b"], prd["c"], prd["n"]],
                               "without_prediction": int(sum(f is None for f in flip)),
-                              "left_out": int(len(flip) - has.sum()),
+                              "left_out_no_plan": int(sum(st_ == "no_plan" for st_ in se.status)),
+                              "left_out_other": int(sum(st_ != "no_plan" for st_ in se.status) - has.sum()),
                               "extrapolated": extra, "valid": valid[d], "tested": name in TESTED,
                               "sessions_differing": int(sum(p_ != o_ for p_, o_ in pairs))}
                 sessions[key] = pairs
@@ -1110,6 +1128,7 @@ def main(argv: list[str] | None = None) -> None:
     meas, tables = known_tables(v7caps, a.v7s_captures, runlog)
     kinds: dict = {}
     series = read_series(v7caps, a.v7s_captures, runlog, h0, kinds)
+    check_one_firefox(meas.get("firefox_version_known_gaps"), kinds.get("firefox_version"))
     scores = score_series(scorer, series)
     sources = margin_sources(series, h0)
     margins, counts = all_margins(scorer, sources)
@@ -1126,9 +1145,7 @@ def main(argv: list[str] | None = None) -> None:
         "firefox_page_grid": {name: {"n": sum(x is not None for x in series[name].page_grid),
                                      "min": (None if name == "F_H1" else   # one person's value is not written
                                              min((x for x in series[name].page_grid if x is not None), default=None)),
-                                     "share_of_captures_at_least_0.99": (
-                                         float(np.mean([x >= 0.99 for x in series[name].page_grid if x is not None]))
-                                         if any(x is not None for x in series[name].page_grid) else None)}
+                                     "share_of_captures_at_least_0.99": grid_share_summary(series[name].page_grid)}
                               for name in (*F_MACHINE, "F_H1")},
         "chrome_page_grid_min": {name: min((x for x in series[name].page_grid if x is not None), default=None)
                                  for name in MC},

@@ -444,7 +444,8 @@ def test_failed_recordings_leave_both_readings():
     finally:
         s7.MACHINE_SERIES_ALL = old
     c = crit["cells"]["MC1/page/D1"]
-    assert c["observed_bc"][2] == c["predicted_bc"][2] == n - 3 and c["left_out"] == 3
+    assert c["observed_bc"][2] == c["predicted_bc"][2] == n - 3 and c["left_out_other"] == 3
+    assert c["left_out_no_plan"] == 0
 
 
 def test_check_known_stops_on_a_missing_point():
@@ -613,3 +614,51 @@ def test_read_series_stops_on_an_mc_plan_not_m0s(monkeypatch):
         s7.read_series(v7caps, Path("."), runlog, [sess(np.ones(3))] * run7.N_H)
     with pytest.raises(s7.RunStop, match="items outside the plan"):
         s7.read_series(v7caps, Path("."), {**runlog, "MC1/t07": "done"}, [sess(np.ones(3))] * run7.N_H)
+
+
+
+# ---------------------------------------------------------------- 2nd cross-review (decision 5)
+
+
+def test_one_firefox_version():
+    s7.check_one_firefox("160.0.0.1", "160.0.0.1")
+    for k, v in (("160.0.0.1", "160.0.1.1"), (None, "160.0.0.1"), ("160.0.0.1", None)):
+        with pytest.raises(s7.RunStop, match="not one version"):
+            s7.check_one_firefox(k, v)
+
+
+def test_grid_share_summary_needs_five():
+    assert s7.grid_share_summary([1.0, 0.98, None, 1.0]) is None
+    assert s7.grid_share_summary([1.0, 0.98, 1.0, 1.0, 0.995]) == pytest.approx(0.8)
+
+
+def test_check_kinds_per_capture_for_known_gaps():
+    plan = ["alnum"] * 100
+    caps = [cap_with(plan, plan) for _ in range(13)] + [cap_with(plan, plan[:80])]   # one capture loses 20%
+    assert s7.check_kinds("K", caps)["page"]["edit_share"] < 0.02                     # pooled: passes
+    with pytest.raises(s7.RunStop):
+        s7.check_kinds("K", caps, per_capture=True)
+
+
+def test_read_series_runs_r8(monkeypatch):
+    n = run7.N_TEXTS
+    none = lambda s_, k: [run7.Capture(s_, i, "no_plan") for i in range(k)]   # noqa: E731
+    v7caps = {s_: none(s_, n) for s_ in run7.MACHINE}
+    v7caps["H1_idle"] = none("H1_idle", run7.N_H)
+    v7caps["M0"][0] = cap_with(["alnum"] * 100, ["alnum"] * 100)
+    v7caps["M0"][0].plan = run7.Plan(np.arange(100) * 55.0, ["alnum"] * 100, ["a"] * 100)
+    runlog = {nm: "done" for nm in s7.expected_items(v7caps)}
+
+    def fake(root, rl, series, units, fmt):
+        out = []
+        for u in units:
+            c = run7.Capture(series, u, "no_plan")
+            if series.startswith("MC") and u == 0:
+                c = cap_with(["alnum"] * 100, ["alnum"] * 90)                # 10% lost on both layers
+                c.plan = run7.Plan(np.arange(100) * float(series[2:]), ["alnum"] * 100, ["a"] * 100)
+                c.inject = {"browser": "chrome", "browser_version": s7.CHROME_VERSION}
+            out.append(c)
+        return out
+    monkeypatch.setattr(s7, "unit_caps", fake)
+    with pytest.raises(s7.RunStop, match="lost or changed in kind"):
+        s7.read_series(v7caps, Path("."), runlog, [sess(np.ones(3))] * run7.N_H, {})
