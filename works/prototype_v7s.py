@@ -67,6 +67,8 @@ GRID_MS = (0.1, 0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
 VERDICT_SESSION_SHARE = 0.10
 P_IDLE_CHROME_MS = (18, 50, 100, 200)   # v7's P_idle above K_chrome's range (criterion.path_sd)
 CHROME_VERSION = "156.0.8078.80"         # machine (v7's Chrome)
+V7_RECORD_SHA256 = "53c03bf7bbf20310b3b98fc7f4e203668169cfb0c200ed75fb340c6d28889879"
+KIND_LOSS_MAX = 0.02                      # amendment R8: share of planned presses whose kind is lost or changed
 KNOWN_POINTS = {"chrome": tuple(float(x) for x in (*splan.K_CHROME_MS, *P_IDLE_CHROME_MS)),
                 "firefox": tuple(float(x) for x in splan.K_FIREFOX_MS)}
 
@@ -623,11 +625,40 @@ def series_from_caps(name: str, caps: list[run7.Capture], browser: str, base_ove
                   [median_gap(s) for s in base], [grid_share(c) for c in caps])
 
 
+def kind_loss(cap: run7.Capture, layer: str) -> tuple[int, int] | None:
+    """amendment R8: the edit distance between the plan's kinds and the layer's counted kinds in capture order
+    (before cleaning), and the plan's length; None for a capture that has no such layer."""
+    if cap.status != "captured" or cap.plan is None or layer not in cap.layers:
+        return None
+    return v7.kind_edit_distance(list(cap.plan.kinds), list(cap.layers[layer].kinds)), int(cap.plan.times.size)
+
+
+def check_kinds(name: str, caps: list[run7.Capture]) -> dict:
+    """amendment R8: per layer, the share of planned presses lost or changed in kind over the series' captures; the
+    run stops above KIND_LOSS_MAX (e.g. a browser that gives an injected character no key name drops it from the
+    counted presses, and the detectors would judge a shorter series)."""
+    out = {}
+    for la in run7.LAYERS:
+        got = [x for x in (kind_loss(c, la) for c in caps) if x is not None]
+        if not got:
+            continue
+        share = sum(d for d, _ in got) / max(1, sum(n for _, n in got))
+        out[la] = {"captures": len(got), "edit_share": share,
+                   "not_counted": int(sum(c.layers[la].not_counted for c in caps
+                                          if c.status == "captured" and la in c.layers))}
+        if share > KIND_LOSS_MAX:
+            raise RunStop(f"{name}/{la}: {share:.3f} of the planned presses lost or changed in kind "
+                          f"(above {KIND_LOSS_MAX}; amendment R8)")
+    return out
+
+
 def check_browsers(caps: list[run7.Capture], browser: str) -> str | None:
     """Every captured item ran on the series' browser, Chrome on v7's version, Firefox on one version (a capture on
     another version is a deviation: the analysis stops so that it is written down first). Returns the version."""
     seen = {(c.inject or {}).get("browser_version") for c in caps if c.status == "captured"}
     names = {(c.inject or {}).get("browser") for c in caps if c.status == "captured"}
+    if None in seen or None in names:
+        raise RunStop(f"a captured {browser} item's meta.json names no browser or version")
     if names - {browser}:
         raise RunStop(f"a {browser} item was captured in {sorted(map(str, names - {browser}))}")
     if browser == "chrome" and seen - {CHROME_VERSION}:
@@ -661,7 +692,8 @@ def expected_items(v7caps: dict) -> set[str]:
     return names
 
 
-def read_series(v7caps: dict, v7s_root: Path, runlog: dict[str, str], h0: list[Sess]) -> dict[str, Series]:
+def read_series(v7caps: dict, v7s_root: Path, runlog: dict[str, str], h0: list[Sess],
+                kinds_out: dict | None = None) -> dict[str, Series]:
     want = expected_items(v7caps)
     if set(runlog) != want:
         raise RunStop(f"v7s's runlogs hold {len(set(runlog) - want)} items outside the plan and miss "
@@ -669,6 +701,10 @@ def read_series(v7caps: dict, v7s_root: Path, runlog: dict[str, str], h0: list[S
     out: dict[str, Series] = {}
     for s_ in run7.MACHINE:
         out[s_] = series_from_caps(s_, v7caps[s_], "chrome")
+    for s_, src in (("M1_replay_8B", "M1_8B"), ("M1_replay_14B", "M1_14B")):   # the plans it takes margins from
+        for t, (c, m) in enumerate(zip(v7caps[s_], v7caps[src])):
+            if c.plan is not None and not same_plan(c.plan, m.plan):
+                raise RunStop(f"{s_}/t{t:02d}: not the plan of {src}")
     out["H1_idle"] = series_from_caps("H1_idle", v7caps["H1_idle"], "chrome", base_override=h0)
     out["H1_idle"].margins_of = "H0"
     texts = range(run7.N_TEXTS)
@@ -678,10 +714,12 @@ def read_series(v7caps: dict, v7s_root: Path, runlog: dict[str, str], h0: list[S
         g = float(s_[2:])
         for t, c in enumerate(caps):   # M0's keys of the same text at the constant (prototype_v7s_plan.build)
             m0 = v7caps["M0"][t].plan
-            if c.plan is not None and (m0 is None or list(c.plan.kinds) != list(m0.kinds)
+            if c.plan is not None and (m0 is None or list(c.plan.keys) != list(m0.keys)
                                        or not run7.same_times(c.plan.times, g * np.arange(c.plan.times.size))):
                 raise RunStop(f"{s_}/t{t:02d}: not M0's keys at a constant {g:g} ms")
         versions[s_] = check_browsers(caps, "chrome")
+        if kinds_out is not None:
+            kinds_out[s_] = check_kinds(s_, caps)
         out[s_] = series_from_caps(s_, caps, "chrome")
     for s_ in F_MACHINE:
         caps = unit_caps(v7s_root, runlog, s_, texts, "t{:02d}")
@@ -690,12 +728,17 @@ def read_series(v7caps: dict, v7s_root: Path, runlog: dict[str, str], h0: list[S
             if c.status != "no_plan" and not same_plan(c.plan, src[t].plan):
                 raise RunStop(f"{s_}/t{t:02d}: the plan is not v7's {PLAN_OF[s_]} plan of the same text")
         versions[s_] = check_browsers(caps, "firefox")
+        if kinds_out is not None:
+            kinds_out[s_] = check_kinds(s_, caps)
         out[s_] = series_from_caps(s_, caps, "firefox")
     caps = unit_caps(v7s_root, runlog, "F_H1", range(splan.N_F_H1), "h{:02d}")
-    for c, h in zip(caps, h0):   # F_H1 types v7's events/H: H0's times
-        if c.plan is not None and not run7.same_times(c.plan.times, h.times):
+    for c, h in zip(caps, h0):   # F_H1 types v7's events/H: H0's times and kinds
+        if c.plan is not None and (not run7.same_times(c.plan.times, h.times) or list(c.plan.kinds) != h.kinds):
             raise RunStop("F_H1: a schedule is not H0's")
     versions["F_H1"] = check_browsers(caps, "firefox")
+    if kinds_out is not None:
+        kinds_out["F_H1"] = check_kinds("F_H1", caps)
+        kinds_out["firefox_version"] = next(iter({v for k, v in versions.items() if k.startswith("F_") and v}), None)
     ff = {v for k, v in versions.items() if k.startswith("F_") and v is not None}
     if len(ff) > 1:
         raise RunStop(f"Firefox series on more than one version: {sorted(ff)}")
@@ -746,6 +789,7 @@ def known_tables(v7caps: dict, v7s_root: Path, runlog: dict[str, str]) -> tuple[
             ms, False)
     for b, cs in k_caps.items():
         check_browsers(cs, b)
+        meas[f"kinds/{b}"] = check_kinds(f"known gaps in {b}", cs)
     tables = {f"{b}/{la}": t for (b, la), t in table.items()}
     check_known(tables)
     return meas, tables
@@ -874,7 +918,7 @@ def human_cells(series: dict[str, Series], scores: dict, margins: dict, counts: 
                        "without_prediction": int(sum(f is None for f in flip)), "extrapolated": extra,
                        "sessions_differing": int(sum(bool(flip[i]) != bool(jb[i] != ja[i])
                                                      for i in np.flatnonzero(ok)))}
-                if name == "H1_idle" and n:
+                if name == "H1_idle" and n >= 35:   # criterion.cell_prediction: human rows with n < 35: no reading
                     row["observed"] = v7.headline(int(b), int(c), int(n))["reading"]
                     row["predicted"] = v7.headline(pb, pc, int(n))["reading"]
                 out[f"{name}/{la}/{d}"] = row
@@ -903,6 +947,9 @@ def jitter_table(counts: dict, sources: dict) -> dict:
             n = int(judged.sum())
             if not n:
                 out[f"{name}/{d}"] = {"n": 0}
+                continue
+            if n < run7.MIN_SUMMARY:
+                out[f"{name}/{d}"] = {"n": n}
                 continue
             share = c[judged].sum(axis=0) / (n * REPEATS)
             first = {}
@@ -950,19 +997,27 @@ def readings_added(series: dict[str, Series], scores: dict, v7caps: dict, scorer
 
 
 def floor_added(v7caps: dict, scores: dict, scorer: Scorer) -> dict:
-    """H1_idle against H1_rep for D5 and D6 (10 persons): flips and the mean absolute change, described."""
+    """H1_idle against H1_rep for D5 and D6 by v7's rule (pairs.replay_repeat): flips as counts, and the floor read by
+    v7.above_floor on the complete triplets (H0, H1_idle, H1_rep) with v7's key [20261031, 7, 12, layer, detector]."""
     out = {}
     for la in run7.LAYERS:
         rep = scorer.score([from_recorded(run7.recorded(c, la)) for c in v7caps["H1_rep"]])
         for d in ADDED:
-            a = scores["H1_idle"][la][d][: len(rep[d])]
-            ok = np.isfinite(a) & np.isfinite(rep[d])
+            k = len(rep[d])
+            h0, a, r = scores["H1_idle"]["base"][d][:k], scores["H1_idle"][la][d][:k], rep[d]
+            ok = np.isfinite(h0) & np.isfinite(a) & np.isfinite(r)
             ja, _ = run7.judgments(d, a)
-            jr, _ = run7.judgments(d, rep[d])
+            jr, _ = run7.judgments(d, r)
             b, c, n = v7.flips(ja[ok], jr[ok])
-            out[f"{la}/{d}"] = {"b": int(b), "c": int(c), "n": int(n),
-                                "mean_abs_change": float(np.abs(a[ok] - rep[d][ok]).mean())
-                                if n >= run7.MIN_SUMMARY else None}
+            row = {"b": int(b), "c": int(c), "n": int(n)}
+            if n:
+                key = [v7.SEED, v7.VERSION, 12, run7.LAYER_IDX[la], DET_IDX[d]]
+                fl = v7.above_floor(h0[ok], a[ok], r[ok], key)
+                row["above_floor"] = fl["above_floor"]
+                row["triplets"] = fl["n"]
+                if fl["n"] >= run7.MIN_SUMMARY:
+                    row["mean_difference_ci95"] = fl.get("ci95")
+            out[f"{la}/{d}"] = row
     return out
 
 
@@ -1028,6 +1083,8 @@ def main(argv: list[str] | None = None) -> None:
         if cm.sha256(ROOT / f) != sha:
             raise RunStop(f"{f} does not match the SHA-256 of the conditions ({name})")
     v7rec_path = ROOT / "results" / "prototype_v7" / "record.json"
+    if cm.sha256(v7rec_path) != V7_RECORD_SHA256:
+        raise RunStop("results/prototype_v7/record.json is not v7's record (its SHA-256)")
     v7rec = json.loads(v7rec_path.read_text(encoding="utf-8"))
     essay, seen = v6.read_kupa(ROOT / files["essay"][0])
     copy_, _ = v6.read_kupa(ROOT / files["copy"][0])
@@ -1051,7 +1108,8 @@ def main(argv: list[str] | None = None) -> None:
     v7caps = run7.load_all(a.v7_captures)
     runlog = read_runlogs(a.v7s_captures)
     meas, tables = known_tables(v7caps, a.v7s_captures, runlog)
-    series = read_series(v7caps, a.v7s_captures, runlog, h0)
+    kinds: dict = {}
+    series = read_series(v7caps, a.v7s_captures, runlog, h0, kinds)
     scores = score_series(scorer, series)
     sources = margin_sources(series, h0)
     margins, counts = all_margins(scorer, sources)
@@ -1064,8 +1122,10 @@ def main(argv: list[str] | None = None) -> None:
         "criterion_human": {f"{t:g}": human_cells(series, scores, margins, counts, tables, t)
                             for t in (THETA, *THETA_SENS)},
         "readings_added": readings_added(series, scores, v7caps, scorer),
+        "kinds": kinds,
         "firefox_page_grid": {name: {"n": sum(x is not None for x in series[name].page_grid),
-                                     "min": min((x for x in series[name].page_grid if x is not None), default=None),
+                                     "min": (None if name == "F_H1" else   # one person's value is not written
+                                             min((x for x in series[name].page_grid if x is not None), default=None)),
                                      "share_of_captures_at_least_0.99": (
                                          float(np.mean([x >= 0.99 for x in series[name].page_grid if x is not None]))
                                          if any(x is not None for x in series[name].page_grid) else None)}
@@ -1084,14 +1144,18 @@ def main(argv: list[str] | None = None) -> None:
     }
     paths = ["works/conditions/prototype_v7s.json", "works/prototype_v7s.py", "works/prototype_v7s_plan.py",
              "works/prototype_v7_run.py", "works/prototype_v7_plan.py", "works/prototype_v7.py",
-             "works/prototype_v6.py", "works/_common.py", "capture/events.py"]
+             "works/prototype_v6.py", "works/_common.py", "capture/events.py", "capture/browser.py",
+             "capture/session.py", "capture/runlist.py", "capture/chain-v7s/chain.ps1", "capture/chain-v7s/guard.ps1",
+             "capture/chain-v7s/minimize.ps1", "pyproject.toml", "uv.lock"]
     rec["provenance"] = {"run_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
                          **cm.git_state(paths),
                          "conditions_sha256": hashlib.sha256(COND.read_bytes()).hexdigest(),
                          "code_sha256": {p_: cm.sha256(ROOT / p_) for p_ in paths},
                          "data_sha256": {n: s_ for n, (_, s_) in files.items()},
                          "v7_record_sha256": cm.sha256(v7rec_path),
-                         "v7s_runs_sha256": run7.read_ndjson(a.v7s_captures / "runlog.b1.ndjson")[0]["runs_sha256"]}
+                         "v7s_runs_sha256": run7.read_ndjson(a.v7s_captures / "runlog.b1.ndjson")[0]["runs_sha256"],
+                         "v7s_runlogs_sha256": {f"runlog.b{b}.ndjson": cm.sha256(a.v7s_captures / f"runlog.b{b}.ndjson")
+                                                for b in range(1, N_BLOCKS + 1)}}
     OUT.parent.mkdir(parents=True, exist_ok=True)
     tmp = OUT.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(to_json(rec), indent=1) + "\n", encoding="utf-8")

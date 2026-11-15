@@ -502,3 +502,114 @@ def test_plan_copy_must_be_its_own_source(tmp_path, monkeypatch):
 def test_firefox_user_js_keeps_alt_off_the_menu():
     from capture import browser as br
     assert 'user_pref("ui.key.menuAccessKeyFocuses", false);' in br.user_js()
+
+
+# ---------------------------------------------------------------- after the independent review (decision 4)
+
+
+def test_d5_d6_label_direction():
+    """'machine' is the synthetic class: held-out synthetic sessions of each detector's own generator score higher
+    than held-out humans (a flipped label would put them lower)."""
+    rng = np.random.default_rng(11)
+
+    def structured(n):   # the gap ending a space is long, others short: a structure iid draws do not keep
+        kinds = list(rng.choice(["alnum", "alnum", "alnum", "space"], n))
+        g = np.array([rng.normal(600, 30) if k == "space" else rng.normal(120, 10) for k in kinds[1:]])
+        return sess(g, kinds)
+    train, test = [structured(300) for _ in range(60)], [structured(300) for _ in range(8)]   # LightGBM: >= 20 rows a leaf
+    d5 = s7.train_d5(train, np.random.default_rng(1))
+    d6 = s7.train_d6(train, np.random.default_rng(2))
+    r = np.random.default_rng(3)
+    syn5 = [s7.Sess(np.concatenate([[0.0], np.cumsum(d5.kde.draw(s.gaps.size, r))]), s.kinds) for s in test]
+    syn6 = [s7.at_p_forge(s, d6.atp, r) for s in test]
+    assert np.mean(d5.proba(syn5)) > np.mean(d5.proba(test)) + 0.05
+    assert np.mean(d6.proba(syn6)) > np.mean(d6.proba(test)) + 0.05
+
+
+def test_verdicts_count_only_tested_cells_of_valid_detectors():
+    agree = {"predicted": "responds", "observed": "responds"}
+    disagree = {"predicted": "not changed", "observed": "responds"}
+    crit = {"cells": {"MC1/page/D1": {**agree, "tested": True, "valid": True},
+                      "M2_8B/page/D1": {**disagree, "tested": False, "valid": True},
+                      "MC1/page/D4": {**disagree, "tested": True, "valid": False}},
+            "sessions": {"MC1/page/D1": [(True, True)], "M2_8B/page/D1": [(False, True)] * 9,
+                         "MC1/page/D4": [(False, True)] * 9}}
+    v = s7.verdicts(crit, {d: d != "D4" for d in s7.DETECTORS})
+    assert v["all"]["verdict"] == "held" and v["all"]["sessions"] == 1 and "D4" not in v
+
+
+def test_human_cells_direction_and_n():
+    rng = np.random.default_rng(5)
+    base = [human(300, rng) for _ in range(40)]
+    se = s7.Series("H1_idle", base, {la: base for la in run7.LAYERS}, ["captured"] * 40, "H0", "chrome",
+                   [s7.median_gap(b) for b in base])
+    sc = D1Only()
+    scores = {"H1_idle": {"base": sc.score(base), **{la: sc.score(base) for la in run7.LAYERS}}}
+    cnt = np.full((40, len(s7.SIGMAS)), 10, dtype=int)   # every person flips at every sigma: probability 1
+    margins = {"H0": {d: [s7.margin_sd(r) for r in cnt] for d in s7.DETECTORS}}
+    tab = {f"chrome/{la}": {0.0: 1.0, 200.0: 1.0} for la in run7.LAYERS}
+    old = s7.HUMAN_SERIES
+    s7.HUMAN_SERIES = ("H1_idle",)
+    try:
+        out = s7.human_cells({"H1_idle": se}, scores, margins, {"H0": {d: cnt for d in s7.DETECTORS}}, tab, 1.0)
+    finally:
+        s7.HUMAN_SERIES = old
+    row = out["H1_idle/page/D1"]
+    assert row["predicted_bc"] == [40, 0, 40] and row["observed_bc"] == [0, 0, 40]   # human -> machine is b
+    assert row["predicted"] == "responds" and row["observed"] == "not changed"
+    se.status = ["captured"] * 30 + ["no_plan"] * 10
+    s7.HUMAN_SERIES = ("H1_idle",)
+    try:
+        out = s7.human_cells({"H1_idle": se}, scores, margins, {"H0": {d: cnt for d in s7.DETECTORS}}, tab, 1.0)
+    finally:
+        s7.HUMAN_SERIES = old
+    assert "observed" not in out["H1_idle/page/D1"]                                   # n = 30 < 35: no reading
+
+
+def test_flip_prob_starts_from_zero():
+    row = np.zeros(len(s7.SIGMAS), dtype=int)
+    row[0] = 10
+    assert s7.flip_prob(row, math.sqrt(2) * 0.025) == pytest.approx(0.5)
+
+
+def cap_with(kinds_plan, kinds_layer):
+    c = run7.Capture("X", 0, "captured")
+    c.plan = run7.Plan(np.arange(len(kinds_plan), dtype=float), list(kinds_plan), ["a"] * len(kinds_plan))
+    c.layers = {la: run7.Layer(np.arange(len(kinds_layer), dtype=float), list(kinds_layer), 0)
+                for la in run7.LAYERS}
+    return c
+
+
+def test_check_kinds_stops_on_lost_presses():
+    plan = ["alnum", "space"] * 50
+    ok = s7.check_kinds("X", [cap_with(plan, plan[:-1])])           # 1 of 100 lost: 0.01
+    assert ok["page"]["edit_share"] == pytest.approx(0.01)
+    with pytest.raises(s7.RunStop, match="lost or changed in kind"):
+        s7.check_kinds("X", [cap_with(plan, [k for k in plan if k != "alnum"][:-3] + ["space"] * 3)])
+
+
+def test_read_series_stops_on_an_mc_plan_not_m0s(monkeypatch):
+    n = run7.N_TEXTS
+    none = lambda s_, k: [run7.Capture(s_, i, "no_plan") for i in range(k)]   # noqa: E731
+    v7caps = {s_: none(s_, n) for s_ in run7.MACHINE}
+    v7caps["H1_idle"] = none("H1_idle", run7.N_H)
+    m0 = run7.Capture("M0", 0, "captured")
+    m0.plan = run7.Plan(np.arange(4) * 55.0, ["alnum"] * 4, ["a", "b", "c", "d"])
+    v7caps["M0"][0] = m0
+    runlog = {nm: "done" for nm in s7.expected_items(v7caps)}
+
+    def fake(root, rl, series, units, fmt):
+        out = []
+        for u in units:
+            c = run7.Capture(series, u, "no_plan")
+            if series.startswith("MC") and u == 0:
+                c = run7.Capture(series, 0, "captured")
+                g = float(series[2:])
+                c.plan = run7.Plan(np.arange(4) * g, ["alnum"] * 4, ["a", "b", "c", "x"])   # one key differs
+            out.append(c)
+        return out
+    monkeypatch.setattr(s7, "unit_caps", fake)
+    with pytest.raises(s7.RunStop, match="not M0's keys"):
+        s7.read_series(v7caps, Path("."), runlog, [sess(np.ones(3))] * run7.N_H)
+    with pytest.raises(s7.RunStop, match="items outside the plan"):
+        s7.read_series(v7caps, Path("."), {**runlog, "MC1/t07": "done"}, [sess(np.ones(3))] * run7.N_H)
