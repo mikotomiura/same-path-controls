@@ -147,6 +147,13 @@ FIREFOX_PREFS = {
     "network.proxy.allow_hijacking_localhost": False,
     "network.dns.disablePrefetch": True,
     "network.prefetch-next": False,
+    # foreground() taps Alt to bring the window to the front; in Firefox on Windows a lone Alt would move the focus to
+    # the menu bar and the next letters would be read as its access keys (code review of 2026-11-15)
+    "ui.key.menuAccessKeyFocuses": False,
+    "datareporting.policy.firstRunURL": "",
+    "toolkit.telemetry.reportingpolicy.firstRun": False,
+    "browser.startup.page": 0,
+    "browser.sessionstore.resume_from_crash": False,
 }
 
 

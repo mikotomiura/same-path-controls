@@ -96,6 +96,7 @@ def build(v7plan: Path, v7cap: Path, out: Path) -> tuple[dict, bytes]:
     items: list[dict] = []
     read: dict[str, str] = {}
     lost: dict[str, int] = {}
+    copies: dict[Path, str] = {}   # each copy and the SHA-256 of its own source
 
     def add(name: str, events: Path, group: str, browser: str, nohook: bool = False) -> None:
         args = ["--events", str(events), "--browser", browser, *(["--no-hook"] if nohook else []), *SESSION]
@@ -135,6 +136,7 @@ def build(v7plan: Path, v7cap: Path, out: Path) -> tuple[dict, bytes]:
             add(f"MC{g}/t{t:02d}", f, "MC_chrome", "chrome")
         f = new_file(f"events/F_M0/t{t:02d}.ndjson")
         shutil.copyfile(src, f)
+        copies[f] = read[name + "/events.ndjson"]
         add(f"F_M0/t{t:02d}", f, "F_M0", "firefox")
 
     # M2's validated plans
@@ -149,6 +151,7 @@ def build(v7plan: Path, v7cap: Path, out: Path) -> tuple[dict, bytes]:
             read[vr.item_name(s7, t) + "/events.ndjson"] = sha256(src)
             f = new_file(f"events/F_{s7}/t{t:02d}.ndjson")
             shutil.copyfile(src, f)
+            copies[f] = read[vr.item_name(s7, t) + "/events.ndjson"]
             add(f"F_{s7}/t{t:02d}", f, "F_M2", "firefox")
 
     # H1's schedules of the first 10 replay persons
@@ -161,13 +164,15 @@ def build(v7plan: Path, v7cap: Path, out: Path) -> tuple[dict, bytes]:
         read["v7-plan/" + rel] = want[rel]
         f = new_file(f"events/F_H1/h{i:02d}.ndjson")
         shutil.copyfile(src, f)
+        copies[f] = want[rel]
         add(f"F_H1/h{i:02d}", f, "F_H1", "firefox")
 
-    for f in (p for p in out.rglob("*") if p.is_file()):   # what was copied is what was read
-        rel = f.relative_to(out).as_posix()
-        if rel.startswith("events/F_"):
-            if sha256(f) not in read.values():
-                raise PlanStop(f"{rel}: the copy differs from its source")
+    for f, want_sha in copies.items():   # each copy is its own source (the same text or person), byte for byte
+        if sha256(f) != want_sha:
+            raise PlanStop(f"{f.relative_to(out).as_posix()}: the copy differs from its source")
+    if sorted(copies) != sorted(p for p in out.rglob("*") if p.is_file() and
+                                p.relative_to(out).as_posix().startswith("events/F_")):
+        raise PlanStop("a file under events/F_ is not a copy made here")
     runs = (json.dumps(items, indent=1) + "\n").encode("utf-8")
     files = sorted(p for p in out.rglob("*") if p.is_file())
     series = list(dict.fromkeys(it["name"].split("/")[0] for it in items))

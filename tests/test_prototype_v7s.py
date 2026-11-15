@@ -416,3 +416,89 @@ def test_criterion_end_to_end_on_synthetic_series():
     assert set(v) == {"all", "D1"} and v["all"]["verdict"] == "held"
     jt = s7.jitter_table(counts, sources)
     assert jt["MC5/D1"]["first_sigma"]["0.10"] <= 2.0
+
+
+
+# ---------------------------------------------------------------- after the code review (decision 3)
+
+
+def test_failed_recordings_leave_both_readings():
+    """R1: a failed capture (no recording) has a plan and a prediction but enters neither reading."""
+    n = 40
+    base = [sess(np.full(99, 1.0)) for _ in range(n)]
+    rec = [s7.Sess(np.sort(b.times + np.random.default_rng(i).normal(0, 0.5, b.times.size)), b.kinds)
+           if i >= 3 else None for i, b in enumerate(base)]
+    se = s7.Series("MC1", base, {"hook": rec, "page": rec}, ["failed"] * 3 + ["captured"] * (n - 3), "MC1",
+                   "chrome", [1.0] * n)
+    sc = D1Only()
+    scores = {"MC1": {"base": sc.score(base), **{la: sc.score(rec) for la in run7.LAYERS}}}
+    cnt = np.zeros((n, len(s7.SIGMAS)), dtype=int)
+    cnt[:, 10:] = 10                                     # every session flips from sigma index 10
+    counts = {"MC1": {d: cnt for d in s7.DETECTORS}}
+    margins = {"MC1": {d: [s7.margin_sd(r) for r in cnt] for d in s7.DETECTORS}}
+    tab = {f"chrome/{la}": {0.0: 5.0, 200.0: 5.0} for la in run7.LAYERS}
+    old = s7.MACHINE_SERIES_ALL
+    s7.MACHINE_SERIES_ALL = ("MC1",)
+    try:
+        crit = s7.criterion_cells({"MC1": se}, scores, margins, counts, tab, {d: True for d in s7.DETECTORS}, 1.0)
+    finally:
+        s7.MACHINE_SERIES_ALL = old
+    c = crit["cells"]["MC1/page/D1"]
+    assert c["observed_bc"][2] == c["predicted_bc"][2] == n - 3 and c["left_out"] == 3
+
+
+def test_check_known_stops_on_a_missing_point():
+    full = {f"{b}/{la}": {x: 0.1 for x in pts} for b, pts in s7.KNOWN_POINTS.items() for la in run7.LAYERS}
+    s7.check_known(full)
+    full["firefox/page"].pop(1.0)
+    with pytest.raises(s7.RunStop, match="known gaps \\[1.0\\] missing"):
+        s7.check_known(full)
+
+
+def cap_on(browser, version, status="captured"):
+    c = run7.Capture("X", 0, status)
+    c.inject = {"browser": browser, "browser_version": version}
+    return c
+
+
+def test_check_browsers():
+    assert s7.check_browsers([cap_on("chrome", s7.CHROME_VERSION)] * 2, "chrome") == s7.CHROME_VERSION
+    assert s7.check_browsers([cap_on("firefox", "160.0.0.1"), cap_on("x", "y", "failed")], "firefox") == "160.0.0.1"
+    for caps, b in (([cap_on("chrome", "156.0.8078.74")], "chrome"), ([cap_on("chrome", s7.CHROME_VERSION)], "firefox"),
+                    ([cap_on("firefox", "160.0.0.1"), cap_on("firefox", "160.0.1.1")], "firefox")):
+        with pytest.raises(s7.RunStop):
+            s7.check_browsers(caps, b)
+
+
+class P:
+    def __init__(self, plan):
+        self.plan = plan
+
+
+def test_expected_items_follow_v7s_plans():
+    v7caps = {"M0": [P(object()) if t != 4 else P(None) for t in range(run7.N_TEXTS)],
+              "M2_8B": [P(object())] * run7.N_TEXTS, "M2_14B": [P(None)] * run7.N_TEXTS}
+    names = s7.expected_items(v7caps)
+    assert "MC1/t04" not in names and "F_M0/t04" not in names and "MC5/t03" in names
+    assert "F_M2_8B/t39" in names and not any(n.startswith("F_M2_14B") for n in names)
+    assert len([n for n in names if n.startswith(("K_", "F_K"))]) == 24 and "F_H1/h09" in names
+
+
+def test_plan_copy_must_be_its_own_source(tmp_path, monkeypatch):
+    plan, cap = fake_v7(tmp_path)
+    (cap / "M2_8B" / "t05" / "events.ndjson").write_bytes((cap / "M2_8B" / "t05" / "events.ndjson").read_bytes())
+    real = sp.shutil.copyfile
+
+    def swapped(src, dst):   # t03's plan put in t05's place
+        src = Path(str(src).replace("t05", "t03"))
+        return real(src, dst)
+    m2 = cap / "M2_8B"
+    (m2 / "t03" / "events.ndjson").write_bytes((m2 / "t03" / "events.ndjson").read_bytes().replace(b'"t"', b'"u"'))
+    monkeypatch.setattr(sp.shutil, "copyfile", swapped)
+    with pytest.raises(sp.PlanStop, match="the copy differs from its source"):
+        sp.build(plan, cap, tmp_path / "out")
+
+
+def test_firefox_user_js_keeps_alt_off_the_menu():
+    from capture import browser as br
+    assert 'user_pref("ui.key.menuAccessKeyFocuses", false);' in br.user_js()

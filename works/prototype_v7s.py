@@ -65,8 +65,10 @@ THETA = 1.0
 THETA_SENS = (0.5, 2.0)
 GRID_MS = (0.1, 0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
 VERDICT_SESSION_SHARE = 0.10
-MIN_CLUSTERS_READ = 35   # v7 amendment B8: fewer clusters cannot read 'not changed' with no flip
 P_IDLE_CHROME_MS = (18, 50, 100, 200)   # v7's P_idle above K_chrome's range (criterion.path_sd)
+CHROME_VERSION = "156.0.8078.80"         # machine (v7's Chrome)
+KNOWN_POINTS = {"chrome": tuple(float(x) for x in (*splan.K_CHROME_MS, *P_IDLE_CHROME_MS)),
+                "firefox": tuple(float(x) for x in splan.K_FIREFOX_MS)}
 
 # D5 (BeCAPTCHA-Type, whole session)
 D5_L = 30
@@ -416,6 +418,9 @@ def load_item(root: Path, runlog: dict[str, str], name: str, hook: bool = True) 
         raise RunStop(f"{name}: the runlog says {res} but the folder is missing")
     cap = run7.Capture(series, 0, "captured", redone=res == "redone", folder=d)
     cap.plan = run7.read_events(d / "events.ndjson")
+    meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    br = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    cap.inject = {"browser": br.get("name"), "browser_version": br.get("version")}   # read back by check_browsers
     if hook:
         cap.layers["hook"] = run7.read_hook(d / "hook.ndjson", injected=True)
     cap.layers["page"] = run7.read_page(d / "page.ndjson")
@@ -528,8 +533,8 @@ def expected_judgments(before: np.ndarray, det: str, prob: list[float | None]) -
 
 
 def cell_reading(series: str, layer: str, det: str, before: np.ndarray, after: np.ndarray, keep: np.ndarray) -> dict:
-    """v7's machine_path rule on sessions kept (one cluster per text): b, c, n and the reading (None below
-    MIN_CLUSTERS_READ clusters is still v7's reading; the rule itself reads 'undecided' there)."""
+    """v7's machine_path rule on the sessions kept (one cluster per text): b, c, n and the reading (None with no
+    pair)."""
     jb, ob = run7.judgments(det, before)
     ja, oa = run7.judgments(det, after)
     ok = ob & oa & keep
@@ -596,10 +601,18 @@ class Series:
     margins_of: str
     browser: str
     median_gap: list[float | None]
+    page_grid: list[float | None] | None = None   # share of page gaps on the 1 ms grid, per captured session
 
 
 def median_gap(s: Sess | None) -> float | None:
     return None if s is None or s.gaps.size == 0 else float(np.median(s.gaps))
+
+
+def grid_share(cap: run7.Capture) -> float | None:
+    if cap.status != "captured" or "page" not in cap.layers or cap.layers["page"].times.size < 2:
+        return None
+    g = np.diff(cap.layers["page"].times)
+    return float(np.mean(np.abs(g - np.round(g)) <= 1e-6))
 
 
 def series_from_caps(name: str, caps: list[run7.Capture], browser: str, base_override: list[Sess | None] | None = None
@@ -607,7 +620,21 @@ def series_from_caps(name: str, caps: list[run7.Capture], browser: str, base_ove
     base = base_override if base_override is not None else [from_plan(c.plan) for c in caps]
     rec = {la: [from_recorded(run7.recorded(c, la)) for c in caps] for la in run7.LAYERS}
     return Series(name, base, rec, [c.status for c in caps], PLAN_OF.get(name, name), browser,
-                  [median_gap(s) for s in base])
+                  [median_gap(s) for s in base], [grid_share(c) for c in caps])
+
+
+def check_browsers(caps: list[run7.Capture], browser: str) -> str | None:
+    """Every captured item ran on the series' browser, Chrome on v7's version, Firefox on one version (a capture on
+    another version is a deviation: the analysis stops so that it is written down first). Returns the version."""
+    seen = {(c.inject or {}).get("browser_version") for c in caps if c.status == "captured"}
+    names = {(c.inject or {}).get("browser") for c in caps if c.status == "captured"}
+    if names - {browser}:
+        raise RunStop(f"a {browser} item was captured in {sorted(map(str, names - {browser}))}")
+    if browser == "chrome" and seen - {CHROME_VERSION}:
+        raise RunStop(f"Chrome items on {sorted(map(str, seen - {CHROME_VERSION}))}, not {CHROME_VERSION}")
+    if len(seen) > 1:
+        raise RunStop(f"{browser} items on more than one version: {sorted(map(str, seen))}")
+    return next(iter(seen), None)
 
 
 def unit_caps(root: Path, runlog: dict[str, str], series: str, units: range, fmt: str) -> list[run7.Capture]:
@@ -645,19 +672,33 @@ def read_series(v7caps: dict, v7s_root: Path, runlog: dict[str, str], h0: list[S
     out["H1_idle"] = series_from_caps("H1_idle", v7caps["H1_idle"], "chrome", base_override=h0)
     out["H1_idle"].margins_of = "H0"
     texts = range(run7.N_TEXTS)
+    versions = {}
     for s_ in MC:
-        out[s_] = series_from_caps(s_, unit_caps(v7s_root, runlog, s_, texts, "t{:02d}"), "chrome")
+        caps = unit_caps(v7s_root, runlog, s_, texts, "t{:02d}")
+        g = float(s_[2:])
+        for t, c in enumerate(caps):   # M0's keys of the same text at the constant (prototype_v7s_plan.build)
+            m0 = v7caps["M0"][t].plan
+            if c.plan is not None and (m0 is None or list(c.plan.kinds) != list(m0.kinds)
+                                       or not run7.same_times(c.plan.times, g * np.arange(c.plan.times.size))):
+                raise RunStop(f"{s_}/t{t:02d}: not M0's keys at a constant {g:g} ms")
+        versions[s_] = check_browsers(caps, "chrome")
+        out[s_] = series_from_caps(s_, caps, "chrome")
     for s_ in F_MACHINE:
         caps = unit_caps(v7s_root, runlog, s_, texts, "t{:02d}")
         src = v7caps[PLAN_OF[s_]]
         for t, c in enumerate(caps):   # the same plan as v7's, text by text (a text v7 had no plan for has none)
             if c.status != "no_plan" and not same_plan(c.plan, src[t].plan):
                 raise RunStop(f"{s_}/t{t:02d}: the plan is not v7's {PLAN_OF[s_]} plan of the same text")
+        versions[s_] = check_browsers(caps, "firefox")
         out[s_] = series_from_caps(s_, caps, "firefox")
     caps = unit_caps(v7s_root, runlog, "F_H1", range(splan.N_F_H1), "h{:02d}")
     for c, h in zip(caps, h0):   # F_H1 types v7's events/H: H0's times
         if c.plan is not None and not run7.same_times(c.plan.times, h.times):
             raise RunStop("F_H1: a schedule is not H0's")
+    versions["F_H1"] = check_browsers(caps, "firefox")
+    ff = {v for k, v in versions.items() if k.startswith("F_") and v is not None}
+    if len(ff) > 1:
+        raise RunStop(f"Firefox series on more than one version: {sorted(ff)}")
     out["F_H1"] = series_from_caps("F_H1", caps, "firefox", base_override=h0[: len(caps)])
     out["F_H1"].margins_of = "H0"
     return out
@@ -667,8 +708,14 @@ def known_tables(v7caps: dict, v7s_root: Path, runlog: dict[str, str]) -> tuple[
     """path_sd per browser and layer at each known gap (hook installed), and every path measure."""
     meas: dict[str, dict] = {}
     table: dict[tuple[str, str], dict[float, float]] = {}
+    k_caps: dict[str, list[run7.Capture]] = {"chrome": [], "firefox": []}
 
     def add(label: str, browser: str, layer: str, cap: run7.Capture, ms: float, use: bool) -> None:
+        if cap.plan is not None and label.startswith(("K_", "F_K")) and \
+                not run7.same_times(cap.plan.times, ms * np.arange(cap.plan.times.size)):
+            raise RunStop(f"{label}: the plan is not a constant {ms:g} ms")
+        if label.startswith(("K_", "F_K")) and layer == "page":
+            k_caps["firefox" if label.startswith("F_K") else "chrome"].append(cap)
         if cap.status != "captured" or layer not in cap.layers:
             meas[f"{label}/{layer}"] = {"status": cap.status}
             return
@@ -697,7 +744,22 @@ def known_tables(v7caps: dict, v7s_root: Path, runlog: dict[str, str]) -> tuple[
     for ms in splan.K_NOHOOK_MS:
         add(f"F_K_nohook/{ms}", "firefox", "page", load_item(v7s_root, runlog, f"F_K_nohook/c{ms:03d}", hook=False),
             ms, False)
-    return meas, {f"{b}/{la}": t for (b, la), t in table.items()}
+    for b, cs in k_caps.items():
+        check_browsers(cs, b)
+    tables = {f"{b}/{la}": t for (b, la), t in table.items()}
+    check_known(tables)
+    return meas, tables
+
+
+def check_known(tables: dict[str, dict[float, float]]) -> None:
+    """amendment R2: every known gap of each browser gives a path_sd on both layers, else the run stops."""
+    for b, pts in KNOWN_POINTS.items():
+        for la in run7.LAYERS:
+            got = set(tables.get(f"{b}/{la}", {}))
+            if got != set(pts):
+                raise RunStop(f"path_sd for {b}/{la}: known gaps {sorted(set(pts) - got)} missing (a known-gap "
+                              "capture failed or its gaps are empty); the analysis stops rather than interpolate "
+                              "over other points")
 
 
 # ---------------------------------------------------------------- readings, predictions, verdicts
@@ -765,12 +827,16 @@ def criterion_cells(series: dict[str, Series], scores: dict, margins: dict, coun
             for d in DETECTORS:
                 flip, prob, extra = session_predictions(se, la, d, margins, counts, tables, theta)
                 before, after = scores[name]["base"][d], scores[name][la][d]
-                s_pred, keep = expected_judgments(before, d, prob)
-                has = np.array([st_ != "no_plan" for st_ in se.status]) & keep
-                obs = cell_reading(name, la, d, before, after, has)
-                prd = cell_reading(name, la, d, before, s_pred, has)
                 jb, ob = run7.judgments(d, before)
                 ja, oa = run7.judgments(d, after)
+                # one set of sessions for both readings: a plan, a judgment on both sides of the pair, a prediction
+                # (review 1 of decision 3: a failed capture had a predicted flip but no observed judgment)
+                common = np.array([st_ != "no_plan" for st_ in se.status]) & ob & oa \
+                    & np.array([f is not None and q is not None for f, q in zip(flip, prob)])
+                s_pred, keep = expected_judgments(before, d, [q if common[i] else None for i, q in enumerate(prob)])
+                has = common & keep
+                obs = cell_reading(name, la, d, before, after, has)
+                prd = cell_reading(name, la, d, before, s_pred, has)
                 pairs = [(bool(flip[i]), bool(jb[i] != ja[i])) for i in range(len(flip))
                          if has[i] and ob[i] and oa[i]]
                 key = f"{name}/{la}/{d}"
@@ -778,6 +844,7 @@ def criterion_cells(series: dict[str, Series], scores: dict, margins: dict, coun
                               "observed_bc": [obs["b"], obs["c"], obs["n"]],
                               "predicted_bc": [prd["b"], prd["c"], prd["n"]],
                               "without_prediction": int(sum(f is None for f in flip)),
+                              "left_out": int(len(flip) - has.sum()),
                               "extrapolated": extra, "valid": valid[d], "tested": name in TESTED,
                               "sessions_differing": int(sum(p_ != o_ for p_, o_ in pairs))}
                 sessions[key] = pairs
@@ -862,17 +929,19 @@ def grid_table(scorer: Scorer, sources: dict) -> dict:
     return out
 
 
-def readings_added(series: dict[str, Series], scores: dict) -> dict:
-    """detectors_added.readings: D5 and D6 on v7's rows by v7's rules (the headline n = 80, H1_load is not taken in
-    v7s's series and H1_rep is read below) and machine_path on every machine series."""
+def readings_added(series: dict[str, Series], scores: dict, v7caps: dict, scorer: Scorer) -> dict:
+    """detectors_added.readings: D5 and D6 on v7's rows by v7's rules (H0 against H1_idle and H1_load, n = 80; the
+    floor H1_rep in floor_added) and machine_path on every machine series."""
     out = {}
+    load = {la: scorer.score([from_recorded(run7.recorded(c, la)) for c in v7caps["H1_load"]]) for la in run7.LAYERS}
     for d in ADDED:
         for la in run7.LAYERS:
-            jb, ob = run7.judgments(d, scores["H1_idle"]["base"][d])
-            ja, oa = run7.judgments(d, scores["H1_idle"][la][d])
-            ok = ob & oa
-            b, c, n = v7.flips(jb[ok], ja[ok])
-            out[f"H0-H1_idle/{la}/{d}"] = v7.headline(int(b), int(c), int(n)) if n else {"n": 0}
+            for row, after in (("H0-H1_idle", scores["H1_idle"][la][d]), ("H0-H1_load", load[la][d])):
+                jb, ob = run7.judgments(d, scores["H1_idle"]["base"][d])
+                ja, oa = run7.judgments(d, after)
+                ok = ob & oa
+                b, c, n = v7.flips(jb[ok], ja[ok])
+                out[f"{row}/{la}/{d}"] = v7.headline(int(b), int(c), int(n)) if n else {"n": 0}
             for name in MACHINE_SERIES_ALL:
                 se = series[name]
                 has = np.array([st_ != "no_plan" for st_ in se.status])
@@ -892,7 +961,8 @@ def floor_added(v7caps: dict, scores: dict, scorer: Scorer) -> dict:
             jr, _ = run7.judgments(d, rep[d])
             b, c, n = v7.flips(ja[ok], jr[ok])
             out[f"{la}/{d}"] = {"b": int(b), "c": int(c), "n": int(n),
-                                "mean_abs_change": float(np.abs(a[ok] - rep[d][ok]).mean()) if n else None}
+                                "mean_abs_change": float(np.abs(a[ok] - rep[d][ok]).mean())
+                                if n >= run7.MIN_SUMMARY else None}
     return out
 
 
@@ -910,7 +980,8 @@ def firefox_vs_chrome(scores: dict) -> dict:
                 ok = oa & ob
                 b, c, n = v7.flips(ja[ok], jb[ok])
                 out[f"{f_}/{la}/{d}"] = {"b": int(b), "c": int(c), "n": int(n),
-                                         "mean_abs_change": float(np.abs(a[ok] - b_[ok]).mean()) if n else None}
+                                         "mean_abs_change": float(np.abs(a[ok] - b_[ok]).mean())
+                                         if n >= run7.MIN_SUMMARY else None}
     return out
 
 
@@ -992,7 +1063,15 @@ def main(argv: list[str] | None = None) -> None:
         "criterion": {th: {"cells": cr["cells"], "verdict": verdicts(cr, valid)} for th, cr in crit.items()},
         "criterion_human": {f"{t:g}": human_cells(series, scores, margins, counts, tables, t)
                             for t in (THETA, *THETA_SENS)},
-        "readings_added": readings_added(series, scores),
+        "readings_added": readings_added(series, scores, v7caps, scorer),
+        "firefox_page_grid": {name: {"n": sum(x is not None for x in series[name].page_grid),
+                                     "min": min((x for x in series[name].page_grid if x is not None), default=None),
+                                     "share_of_captures_at_least_0.99": (
+                                         float(np.mean([x >= 0.99 for x in series[name].page_grid if x is not None]))
+                                         if any(x is not None for x in series[name].page_grid) else None)}
+                              for name in (*F_MACHINE, "F_H1")},
+        "chrome_page_grid_min": {name: min((x for x in series[name].page_grid if x is not None), default=None)
+                                 for name in MC},
         "floor_added": floor_added(v7caps, scores, scorer),
         "perturbation_jitter": jitter_table(counts, sources),
         "perturbation_grid": grid_table(scorer, sources),

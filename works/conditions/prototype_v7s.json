@@ -1,7 +1,7 @@
 {
   "version": "7s",
   "purpose": "After v7 (post hoc in its origin, prospective in its tests): (1) the criterion stated after v7's captures in the manuscript of paper B (v0.18), that the path moves a judgment only where its deviation on known gaps reaches the smallest software perturbation that moves the detector on the session at hand, is lowered to an untested hypothesis and tested on captures not yet taken, with its scale, threshold and readings fixed here; (2) two detectors from peer-reviewed papers are added and read on v7's captures and the new ones (D5, a whole-session form of BeCAPTCHA-Type, DeAlcala et al. 2023; D6, the timing features of Mehta et al., IEEE T-BIOM 2026); (3) a second path, Firefox, is captured for part of v7's series, with predictions of how it differs from Chrome written here. The researcher's decision 26 of .steering/20261113-v7-production-v4-returns and decision 1 of .steering/20261115-v7s-conditions.",
-  "fixed_before_running": "Written on 2026-11-15, before any capture of v7s and before any value of D5, D6 or of the fine perturbations below. Seen before writing: v7's record (record.json 53c03bf7..., analysis commit a6fa5ca), v7p's, v7q's and v7r's records, and the manuscript v0.18 (its post hoc criterion, its 1 ms cases and its controls of 5 to 200 ms). Not seen: any capture at a constant gap below 5 ms, any capture in Firefox, any score of D5 or D6, any perturbation of a machine plan. Code: works/prototype_v7s.py (analysis), works/prototype_v7s_plan.py (plan), the Firefox launch in capture/browser.py and capture/session.py, the watchers capture/chain-v7s (chain, guard, minimize: v7's with Firefox's capture window), tests/test_prototype_v7s.py, and LightGBM 4.7.0 pinned in pyproject.toml and uv.lock, committed with this file. Amended once before any value (decision 2 of .steering/20261115-v7s-conditions: the cell prediction from flip probabilities and a finer sigma grid, after a synthetic check of the code). v7's deposited conditions (e5c21a4d...) and v7p-v7r's files are not changed.",
+  "fixed_before_running": "Written on 2026-11-15, before any capture of v7s and before any value of D5, D6 or of the fine perturbations below. Seen before writing: v7's record (record.json 53c03bf7..., analysis commit a6fa5ca), v7p's, v7q's and v7r's records, and the manuscript v0.18 (its post hoc criterion, its 1 ms cases and its controls of 5 to 200 ms). Not seen: any capture at a constant gap below 5 ms, any capture in Firefox, any score of D5 or D6, any perturbation of a machine plan. Code: works/prototype_v7s.py (analysis), works/prototype_v7s_plan.py (plan), the Firefox launch in capture/browser.py and capture/session.py, the watchers capture/chain-v7s (chain, guard, minimize: v7's with Firefox's capture window), tests/test_prototype_v7s.py, and LightGBM 4.7.0 pinned in pyproject.toml and uv.lock, committed with this file. Amended once before any value (decision 2 of .steering/20261115-v7s-conditions: the cell prediction from flip probabilities and a finer sigma grid, after a synthetic check of the code). v7's deposited conditions (e5c21a4d...) and v7p-v7r's files are not changed. Amended a second time before any value (decision 3 of .steering/20261115-v7s-conditions), after the code review (Claude and Codex) of 7d02179: amendments_before_any_value below.",
   "base": {
     "v7_code_commit": "a6fa5cae45579c2b4cc95ccb938eab6ea622310e",
     "v7_conditions_sha256": "e5c21a4d5bcf8c5a3b6a2132c310f71b643d4907c6dcce706cefa3c723dbb91e",
@@ -65,7 +65,16 @@
   },
   "perturbation_grid": {
     "purpose": "descriptive beside the criterion: the grid on which the plans and H0 move each detector",
-    "grid_ms": [0.1, 0.2, 0.5, 1, 2, 4, 8, 16],
+    "grid_ms": [
+      0.1,
+      0.2,
+      0.5,
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
     "what": "for every machine series of v7 and v7s (plans) and H0 (80 persons): rounding times to the grid then v6's cleaning; per detector and series b, c, n and (b + c) / n; and the jitter of margin_sd summarised per series as (b + c) / n at each sigma (mean over the 10 repeats) with the smallest sigma at which it reaches 3/n and 0.10 (v7p's form)."
   },
   "path_measures": "for every known-gap capture (K_chrome, F_K, and v7's P_idle and P_nohook re-read): median, median minus planned, MAD, 95th percentile of the absolute deviation from the median, the share of gaps below 1 ms, the share of presses dropped by cleaning (shared stamps), path_sd (cleaned) and the raw SD, and for Firefox the share of page gaps on the 1 ms grid; per browser and layer. Firefox against Chrome on the same plans (F_M0, F_M2, F_H1 against v7's M0, M2, H1_idle): the per-session change of each detector's score between the two recordings, described.",
@@ -76,5 +85,14 @@
     "D5 and D6 are re-implementations from text; D6's settings left open by the paper are ours, and its features are kinds, not keys, without holds or linguistic features. A 'not valid here' is about these rebuilds.",
     "The criterion is tested on constant-gap plans and on v7's plans, not on new kinds of machine.",
     "MC's texts are M0's; MC and M0 differ only in the constant."
+  ],
+  "amendments_before_any_value": [
+    "R1 (cell_prediction): the predicted and the observed readings of a cell are made on one set of sessions: those with a plan, a judgment on both sides of the pair (a failed or unscored recording is left out of both) and a prediction; the flip probabilities are summed over that set only. The number left out is reported per cell.",
+    "R2 (path_sd): every known gap of the browser must give a path_sd on both layers (Chrome 0, 1, 2, 3, 5 ms of K_chrome and 18, 50, 100, 200 ms of v7's P_idle; Firefox the 9 of F_K); if one is missing (a capture failed twice, or no gap), the analysis stops instead of interpolating over the remaining points. The known-gap plans are checked to be the constant they name.",
+    "R3 (browser): every captured v7s item's meta.json must name the series' browser; Chrome items must be on 156.0.8078.80 and all Firefox items on one version, else the analysis stops (a capture on another version is a deviation, written down before the analysis runs). MC's plans are checked to be M0's keys at the constant. The Firefox version is read from meta.json (the file version, four parts); the chain checks firefox.exe's ProductVersion as the researcher records it before block 1.",
+    "R4 (record): the share of page gaps on the 1 ms grid is reported for every Firefox capture (F_M0, F_M2, F_H1: the number of captures, the minimum, and the share of captures at 0.99 or more; F_K in path_measures), and its minimum for Chrome's MC. A mean over fewer than 5 persons or sessions is not written (v7's MIN_SUMMARY).",
+    "R5 (readings): D5 and D6 are read on H0 against H1_load as well (v7's rule), as detectors_added.readings says.",
+    "R6 (verdict): 'not decided' takes precedence: if no tested cell has two decided readings, the verdict is 'not decided' whatever the share of sessions differing.",
+    "R7 (Firefox launch): user.js also sets ui.key.menuAccessKeyFocuses false (the window is brought to the front with a tap of Alt, which in Firefox on Windows would move the focus to the menu bar), no first-run page, no session restore. The plan maker checks each copy against its own source. Before the production a smoke capture in Firefox is taken outside the production folder (the handbook)."
   ]
 }
