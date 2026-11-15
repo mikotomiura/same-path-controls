@@ -6,7 +6,7 @@
     python -m capture.session --live --out <dir>
   common: --load <model> --load-prompt-file <p.txt>   background inference load
           --no-hook                                   the browser page only (P_nohook, amendments B11 and B14)
-          --browser chrome|edge  --inject unicode|vk  --auto-focus
+          --browser chrome|edge|firefox  --inject unicode|vk  --auto-focus
           --no-mouse-guard                            do not hold the mouse while typing (held by default; held in
                                                       every production capture: the researcher, 2026-11-04)
 
@@ -216,7 +216,7 @@ def parse(argv=None) -> argparse.Namespace:
     ap.add_argument("--load")
     ap.add_argument("--load-prompt-file", type=Path)
     ap.add_argument("--no-hook", action="store_true")
-    ap.add_argument("--browser", default="chrome", choices=["chrome", "edge"])  # Chrome, decided by the researcher 2026-11-04
+    ap.add_argument("--browser", default="chrome", choices=["chrome", "edge", "firefox"])  # Chrome, decided by the researcher 2026-11-04; firefox for v7s
     ap.add_argument("--inject", default="unicode", choices=["unicode", "vk"])
     ap.add_argument("--auto-focus", action="store_true")  # the start used in production (researcher, 2026-11-04)
     ap.add_argument("--no-mouse-guard", action="store_true")

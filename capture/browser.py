@@ -18,6 +18,8 @@ from pathlib import Path
 EXE = {
     "chrome": Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
     "edge": Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+    # v7s (works/conditions/prototype_v7s.json, captures.firefox): the second path, the page layer only differs
+    "firefox": Path(r"C:\Program Files\Mozilla Firefox\firefox.exe"),
 }
 TITLE = "v7 capture page"
 WM_IME_CONTROL = 0x0283
@@ -111,6 +113,49 @@ OFFLINE_FLAGS = [f"--host-resolver-rules={HOST_RULES}", "--disable-background-ne
                  "--disable-component-update", "--disable-domain-reliability", "--no-pings"]
 
 
+# Firefox (v7s): no command-line flags for these, so the new profile gets a user.js. Nothing here touches the timer
+# prefs (privacy.reduceTimerPrecision and its kin): the page runs at Firefox's default precision (captures.firefox).
+# The proxy sends every request but those to 127.0.0.1 to a port where nothing listens (localhost is not proxied:
+# network.proxy.allow_hijacking_localhost false), as Chrome's host rules leave only 127.0.0.1.
+FIREFOX_PREFS = {
+    "browser.shell.checkDefaultBrowser": False,
+    "browser.aboutwelcome.enabled": False,
+    "browser.startup.homepage_override.mstone": "ignore",
+    "startup.homepage_welcome_url": "",
+    "startup.homepage_welcome_url.additional": "",
+    "datareporting.policy.dataSubmissionEnabled": False,
+    "datareporting.healthreport.uploadEnabled": False,
+    "toolkit.telemetry.enabled": False,
+    "toolkit.telemetry.unified": False,
+    "app.normandy.enabled": False,
+    "app.shield.optoutstudies.enabled": False,
+    "app.update.auto": False,
+    "browser.safebrowsing.malware.enabled": False,
+    "browser.safebrowsing.phishing.enabled": False,
+    "browser.safebrowsing.downloads.enabled": False,
+    "network.captive-portal-service.enabled": False,
+    "network.connectivity-service.enabled": False,
+    "extensions.update.enabled": False,
+    "browser.search.update": False,
+    "network.proxy.type": 1,
+    "network.proxy.http": "127.0.0.1",
+    "network.proxy.http_port": 9,
+    "network.proxy.ssl": "127.0.0.1",
+    "network.proxy.ssl_port": 9,
+    "network.proxy.share_proxy_settings": True,
+    "network.proxy.no_proxies_on": "127.0.0.1",
+    "network.proxy.allow_hijacking_localhost": False,
+    "network.dns.disablePrefetch": True,
+    "network.prefetch-next": False,
+}
+
+
+def user_js(prefs: dict = FIREFOX_PREFS) -> str:
+    """The text of user.js: one user_pref line per pref (JSON's quoting is valid for user.js)."""
+    import json
+    return "".join(f"user_pref({json.dumps(k)}, {json.dumps(v)});\n" for k, v in prefs.items())
+
+
 def stale_profiles(tmp: Path | None = None) -> list[Path]:
     """Temporary profiles left by an earlier capture (a capture that crashed before deleting its profile)."""
     tmp = Path(tempfile.gettempdir()) if tmp is None else Path(tmp)
@@ -139,13 +184,19 @@ class Browser:
         self.exe = EXE[name]
         self.version = file_version(self.exe)
         self.profile = Path(tempfile.mkdtemp(prefix=PROFILE_PREFIX))
+        if name == "firefox":
+            (self.profile / "user.js").write_text(user_js(), encoding="utf-8", newline="\n")
         self.proc: subprocess.Popen | None = None
         self.started_ns: int | None = None
 
     def args(self) -> list[str]:
         """--app opens the page in a window with no address bar and no tabs, so that no press can reach an address
         bar (Mac review of 2026-11-04). --incognito in the live capture (L0). The list is written to meta.json as
-        it is passed."""
+        it is passed. Firefox (v7s) has no --app: -kiosk opens the page full screen with no address bar or tabs."""
+        if self.name == "firefox":
+            if self.incognito:
+                raise ValueError("the live capture (L0) is not taken in Firefox")
+            return [str(self.exe), "-profile", str(self.profile), "-no-remote", "-kiosk", self.url]
         return ([str(self.exe), f"--user-data-dir={self.profile}", "--no-first-run", "--no-default-browser-check",
                  "--disable-extensions", "--disable-sync", "--disable-translate", *OFFLINE_FLAGS]
                 + (["--incognito"] if self.incognito else []) + [f"--app={self.url}"])

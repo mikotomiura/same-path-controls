@@ -9,6 +9,8 @@ dependencies = [
     "atact @ git+https://github.com/mikotomiura/affective-relief-audit@b559a80c623d36357dd0736b887497a0cb789af5",
     "numpy==2.5.4",
     "pillow==13.0.0",
+    # D6 of v7s (Mehta et al.: LightGBM), pinned before any value
+    "lightgbm==4.7.0",
 ]
 
 [dependency-groups]
