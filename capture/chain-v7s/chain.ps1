@@ -3,7 +3,7 @@
 # key; no LLM (the ollama checks are dropped); Chrome's and Firefox's versions and update stops are checked before
 # every block (works/conditions/prototype_v7s.json, captures).
 # Writes counts and times only to C:\work\v7s-chain\chain.log (no press, key, text or per-item seconds).
-param([Parameter(Mandatory = $true)][string]$FirefoxVersion)
+param([Parameter(Mandatory = $true)][string]$FirefoxVersion, [switch]$CheckOnly)
 $ErrorActionPreference = 'Stop'
 $env:UV_OFFLINE = '1'
 $repo = 'C:\work\affective-tactility-keystroke'
@@ -54,7 +54,7 @@ function RunBlock($b) {
     Log "block $b runlist exit=$LASTEXITCODE"
 }
 
-if ($args -contains '-CheckOnly') { $bad = Checks; "checks differ: [$($bad -join ', ')] (empty = all equal)"; "RunlistAlive=$(RunlistAlive)"; exit 0 }
+if ($CheckOnly) { $bad = Checks; "checks differ: [$($bad -join ', ')] (empty = all equal)"; "RunlistAlive=$(RunlistAlive)"; exit 0 }
 
 Log "chain start (firefox $FirefoxVersion)"
 if (RunlistAlive) { Log 'STOP: a runlist is already running'; exit 1 }
