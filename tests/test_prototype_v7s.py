@@ -518,6 +518,17 @@ def test_firefox_user_js_takes_its_window_as_active():
     assert "R19" in cond["fixed_before_running"]
 
 
+def test_firefox_user_js_keeps_the_welcome_modal_closed():
+    from capture import browser as br
+    js = br.user_js()
+    assert 'user_pref("browser.preonboarding.enabled", false);' in js                          # R20
+    assert 'user_pref("termsofuse.bypassNotification", true);' in js
+    assert 'user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);' in js
+    cond = json.loads((ROOT / "works" / "conditions" / "prototype_v7s.json").read_text(encoding="utf-8"))
+    assert any(r.startswith("R20 ") and "browser.preonboarding.enabled" in r for r in cond["amendments_before_any_value"])
+    assert "R20" in cond["fixed_before_running"]
+
+
 def test_user_js_recorded_for_firefox_and_not_written_for_chrome(monkeypatch, tmp_path):
     import hashlib
     from capture import browser as br

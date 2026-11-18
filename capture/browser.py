@@ -159,6 +159,14 @@ FIREFOX_PREFS = {
     # has_focus no longer shows that the system activated the window: the foreground is checked by the system
     # before every press (inject.type_schedule's guard_hwnd), and the page's count and kinds are read after (R8, R16).
     "focusmanager.testmode": True,
+    # R20 (the smoke of handbook v9 on the work PC, 2026-11-18): with R19 the checks still stopped every Firefox capture
+    # before any press. A screenshot showed why: a new profile of Firefox 160.0.1 opens a modal 'Welcome to Firefox'
+    # (terms of use and data collection notice, with a Continue button) over the page; it holds the focus, so no
+    # synthetic key or click reached the page until a person clicked. Any one of these three prefs kept it from opening
+    # (each tried alone, and a control without them stopped again); all three are set.
+    "browser.preonboarding.enabled": False,
+    "termsofuse.bypassNotification": True,
+    "datareporting.policy.dataSubmissionPolicyBypassNotification": True,
     "datareporting.policy.firstRunURL": "",
     "toolkit.telemetry.reportingpolicy.firstRun": False,
     "browser.startup.page": 0,
