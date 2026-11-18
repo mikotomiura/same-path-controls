@@ -505,6 +505,32 @@ def test_firefox_user_js_keeps_alt_off_the_menu():
     assert 'user_pref("ui.key.menuAccessKeyFocuses", false);' in br.user_js()
 
 
+def test_firefox_user_js_takes_its_window_as_active():
+    from capture import browser as br
+    js = br.user_js()
+    assert 'user_pref("focusmanager.testmode", true);' in js     # R19
+    # no pref of time, events or fingerprinting resistance (the page runs at Firefox's default precision)
+    touched = [k for k in br.FIREFOX_PREFS if k.startswith(("privacy.", "dom.event", "dom.timer"))
+               or "timer" in k.lower() or "precision" in k.lower() or "fingerprint" in k.lower()]
+    assert touched == []
+    cond = json.loads((ROOT / "works" / "conditions" / "prototype_v7s.json").read_text(encoding="utf-8"))
+    assert any(r.startswith("R19 ") and "focusmanager.testmode" in r for r in cond["amendments_before_any_value"])
+    assert "R19" in cond["fixed_before_running"]
+
+
+def test_user_js_recorded_for_firefox_and_not_written_for_chrome(monkeypatch, tmp_path):
+    import hashlib
+    from capture import browser as br
+    monkeypatch.setattr(br, "file_version", lambda exe: "0.0.0.0")
+    monkeypatch.setattr(br.tempfile, "tempdir", str(tmp_path))
+    ff = br.Browser("firefox", "http://127.0.0.1:1/")
+    assert br.user_js_sha256(ff.profile) == hashlib.sha256(br.user_js().encode("utf-8")).hexdigest()
+    ch = br.Browser("chrome", "http://127.0.0.1:1/")
+    assert not (ch.profile / "user.js").exists()                 # Chrome gets no user.js, so no testmode
+    src = (ROOT / "capture" / "session.py").read_text(encoding="utf-8")
+    assert 'if a.browser == "firefox":' in src and 'meta["browser"]["user_js_sha256"] = br.user_js_sha256(b.profile)' in src
+
+
 # ---------------------------------------------------------------- after the independent review (decision 4)
 
 

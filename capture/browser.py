@@ -150,6 +150,15 @@ FIREFOX_PREFS = {
     # foreground() taps Alt to bring the window to the front; in Firefox on Windows a lone Alt would move the focus to
     # the menu bar and the next letters would be read as its access keys (code review of 2026-11-15)
     "ui.key.menuAccessKeyFocuses": False,
+    # R19 (the Firefox smoke of v7s on the work PC, 2026-11-18, handbook v8): Firefox 160 did not take a window brought
+    # to the front by a program as active, so document.hasFocus() stayed false and the checks stopped the capture
+    # before any press (four tries; a real mouse click made it true). In test mode Firefox emulates the raise of its
+    # window (nsFocusManager::RaiseWindow -> WindowRaised) and does not lower it when the system deactivates it
+    # (AppWindow::WindowDeactivated). The pref is read only in nsFocusManager.cpp and AppWindow.cpp (searchfox,
+    # 2026-11-18); WebDriver sets it too (remote/shared/RecommendedPreferences.sys.mjs). So in Firefox the page's
+    # has_focus no longer shows that the system activated the window: the foreground is checked by the system
+    # before every press (inject.type_schedule's guard_hwnd), and the page's count and kinds are read after (R8, R16).
+    "focusmanager.testmode": True,
     "datareporting.policy.firstRunURL": "",
     "toolkit.telemetry.reportingpolicy.firstRun": False,
     "browser.startup.page": 0,
@@ -161,6 +170,12 @@ def user_js(prefs: dict = FIREFOX_PREFS) -> str:
     """The text of user.js: one user_pref line per pref (JSON's quoting is valid for user.js)."""
     import json
     return "".join(f"user_pref({json.dumps(k)}, {json.dumps(v)});\n" for k, v in prefs.items())
+
+
+def user_js_sha256(profile: Path) -> str:
+    """The SHA-256 of the user.js a Firefox capture runs with (R19: written to meta.json; the profile is deleted)."""
+    import hashlib
+    return hashlib.sha256((Path(profile) / "user.js").read_bytes()).hexdigest()
 
 
 def stale_profiles(tmp: Path | None = None) -> list[Path]:

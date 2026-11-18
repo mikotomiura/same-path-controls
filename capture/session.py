@@ -422,6 +422,8 @@ def main(argv=None) -> int:
         b = br.Browser(a.browser, page.base + "/", incognito=a.live)
         meta["browser"] = {"name": a.browser, "version": b.version, "exe": str(b.exe), "args": b.args()[1:],
                            "stale_profiles_deleted": stale["deleted"]}
+        if a.browser == "firefox":  # R19: which prefs the capture ran with (the profile is deleted afterwards)
+            meta["browser"]["user_js_sha256"] = br.user_js_sha256(b.profile)
         hwnd = b.start()
         opened = page.wait("open", 1, 30)["last"]["open"]
         # the GPU that draws the page (WebGL's unmasked renderer, as chrome://gpu shows it): the display is on the
