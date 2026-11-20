@@ -219,7 +219,7 @@ def test_the_lock_is_a6fa5cas_or_7d02179s_which_only_adds_lightgbm(monkeypatch):
                            cwd=ex.ROOT, capture_output=True, text=True, check=True).stdout
     assert "+name = \"lightgbm\"" in added and added.count("\n+[[package]]") == 1
     ex.lock_check()
-    monkeypatch.setattr(ex, "LOCK_COMMITS", ("5c34b85", "5c34b85"))
+    monkeypatch.setattr(ex, "LOCK_COMMITS", ("5c34b854cdc205cca0e6268a082d15553dac19cf",) * 2)   # full: resolves in the archive too
     monkeypatch.setattr(ex, "ROOT", ex.ROOT)
     real = ex.cm.git
     monkeypatch.setattr(ex.cm, "git", lambda *a: "0" * 40 if a[0] == "hash-object" else real(*a))

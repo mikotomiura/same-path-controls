@@ -19,6 +19,27 @@ import prototype_v7s_plan as splan  # noqa: E402
 import prototype_v7u as vu  # noqa: E402
 
 SECRET = "zqxsecretkeysqzx"   # positive control: plan keys that must never reach a file
+
+
+@pytest.fixture
+def run_modules():
+    """The modules a run loads, and no other of the repo: other test files of a full test run import modules of the
+    repo that the export never loads (prototype_v7v, earlier runs), which code_check's last check stops on. They are
+    taken out of sys.modules for the test (and put back after it), with a monkeypatch of their own, so that a test's
+    monkeypatch.undo() does not put them back."""
+    mp = pytest.MonkeyPatch()
+    root, tests = ex.ROOT.resolve(), (ex.ROOT / "tests").resolve()
+    me = Path(ex.__file__).resolve()
+    for name, m in list(sys.modules.items()):
+        f = getattr(m, "__file__", None)
+        if not f:
+            continue
+        pf = Path(f).resolve()
+        if pf.is_relative_to(root) and not pf.is_relative_to(tests) and pf != me and name not in ex.MODULES \
+                and not pf.is_relative_to(root / ".venv"):
+            mp.delitem(sys.modules, name)
+    yield
+    mp.undo()
 N_TEXTS = 3
 
 
@@ -418,7 +439,7 @@ def test_the_manifest_holds_hashes_counts_and_the_time_only():
             ex.check_manifest(bad)
 
 
-def test_code_check_passes_on_head_and_stops_on_other_bytes_or_modules(monkeypatch):
+def test_code_check_passes_on_head_and_stops_on_other_bytes_or_modules(monkeypatch, run_modules):
     """code-reviewer M4 and M5: v7u's files at ba4bfc8, the files on the way to H0 at 5508490, v7u's and v7s's own
     checks, and every module loaded from its checked file."""
     ex.code_check()
@@ -443,7 +464,7 @@ def test_code_check_passes_on_head_and_stops_on_other_bytes_or_modules(monkeypat
         ex.code_check()
 
 
-def test_main_stops_before_writing_when_a_check_stops(tmp_path, monkeypatch):
+def test_main_stops_before_writing_when_a_check_stops(tmp_path, monkeypatch, run_modules):
     out = tmp_path / "export_v7s_series"
     monkeypatch.setattr(ex, "OUT", out)
     monkeypatch.setattr(ex, "V7U_COMMIT", "ea634630a29983c41ff905fda738f72abde183e6")
@@ -473,7 +494,7 @@ def test_load_stops_when_an_item_outside_the_runlogs_is_read(tmp_path, monkeypat
         ex.load(tmp_path, tmp_path, [])
 
 
-def test_main_checks_the_counts_and_the_manifest_then_writes(tmp_path, monkeypatch):
+def test_main_checks_the_counts_and_the_manifest_then_writes(tmp_path, monkeypatch, run_modules):
     """main from the checks to the files, with v7s's loading and H0 replaced by the test's items (the counts check and
     the manifest check are called with what main builds; the files and manifest are written only after both)."""
     out = tmp_path / "export_v7s_series"
@@ -542,7 +563,7 @@ def test_verify_reads_the_returned_folder_as_the_work_pc_checked_it(tmp_path):
         ex.main(["--verify", str(out3), "--v7-captures", str(tmp_path)])
 
 
-def test_a_module_of_the_repo_outside_the_checked_list_stops(monkeypatch):
+def test_a_module_of_the_repo_outside_the_checked_list_stops(monkeypatch, run_modules):
     import types
 
     m = types.ModuleType("numpy_shadow")
