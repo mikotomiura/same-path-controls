@@ -119,11 +119,13 @@ def series_summary(rows: list[dict], machine: bool) -> dict:
     """Over a series' captured items: the share of captures 'on the step' and quantiles of the per-capture shares."""
     got = [r for r in rows if "t" in r]
     out: dict = {"captures": len(got), "not_captured": len(rows) - len(got)}
-    for side in ("t", "h"):
+    for side in ("t", "h", *(("hook",) if machine else ())):   # the hook only for machine captures (described)
+        if side == "hook" and not any("hook" in r for r in got):
+            continue
         for key in ("share_zero", "share_on_step_of_positive", "share_on_1ms_grid"):
-            vals = [r[side].get(key) for r in got]
+            vals = [r.get(side, {}).get(key) for r in got]
             out[f"{side}/{key}"] = run7.summary(vals, ends=machine)
-        steps = [r[side].get("share_on_step_of_positive") for r in got]
+        steps = [r.get(side, {}).get("share_on_step_of_positive") for r in got]
         steps = [v for v in steps if v is not None]
         out[f"{side}/share_of_captures_on_step"] = (float(np.mean([v >= ON_STEP_AT_LEAST for v in steps]))
                                                     if len(steps) >= run7.MIN_SUMMARY else None)

@@ -163,7 +163,7 @@ def test_run_end_to_end_on_fake_captures(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- v7s's and v7's own loaders on fake folders
 
 
-def _folder(d: Path, h_ms, stepped: bool, browser: str, hook: bool, events_series: str):
+def _folder(d: Path, h_ms, stepped: bool, browser: str, hook: bool, events_series: str, hook_ms=None):
     """One captured item as the capture writes it: events.ndjson, meta.json, page.ndjson and (unless nohook) hook."""
     from capture import events as ev
 
@@ -177,7 +177,7 @@ def _folder(d: Path, h_ms, stepped: bool, browser: str, hook: bool, events_serie
     if hook:
         rows = [{"type": "header"}]
         rows += [{"type": "key", "t_ns": int(x * 1e6), "down": True, "injected": True, "ours": True,
-                  "repeat": False, "kind": "alnum"} for x in h_ms]
+                  "repeat": False, "kind": "alnum"} for x in (h_ms if hook_ms is None else hook_ms)]
         rows += [{"type": "footer"}]
         (d / "hook.ndjson").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
 
@@ -187,7 +187,11 @@ def _fake_roots(tmp_path):
     import prototype_v7s_plan as splan
 
     rng = np.random.default_rng(7)
-    h = lambda ms: 1000.0 + np.arange(40) * ms + rng.uniform(0, 0.3, 40)  # noqa: E731
+    # 0 ms: the same time for every press, as v7s recorded most of them; else the plan with a small jitter
+    h = lambda ms: 1000.0 + np.arange(40) * ms + (rng.uniform(0, 0.3, 40) if ms else 0.0)  # noqa: E731
+    # the hook's own times: on a 1/64 s step for the F_M2 series only, so that hook and page tell apart
+    hk = lambda ms, s_: (np.floor((2000.0 + np.arange(40) * ms) / vt.STEP_MS) * vt.STEP_MS  # noqa: E731
+                         if s_.startswith("F_M2") else 2000.0 + np.arange(40) * ms + (rng.uniform(0, 0.05, 40) if ms else 0.0))
     v7s = tmp_path / "v7s"
     items = {}
     for ms in splan.K_FIREFOX_MS:
@@ -202,8 +206,8 @@ def _fake_roots(tmp_path):
             items[f"{s_}/t{i:02d}"] = (37.0, s_.startswith("F_"), "firefox" if s_.startswith("F_") else "chrome", True)
     for i in range(splan.N_F_H1):
         items[f"F_H1/h{i:02d}"] = (120.0, True, "firefox", True)
-    for name, (ms, st, br, hk) in items.items():
-        _folder(v7s / name, h(max(ms, 0.0)), st, br, hk, name.split("/")[0])
+    for name, (ms, st, br, hook_) in items.items():
+        _folder(v7s / name, h(ms), st, br, hook_, name.split("/")[0], hook_ms=hk(ms, name.split("/")[0]))
     results = {name: "done" for name in items}
     results["F_M2_14B/t06"] = "no_plan"   # a no_plan item as v7s's runlogs keep it
     names = list(results)
@@ -219,7 +223,8 @@ def _fake_roots(tmp_path):
 
 
 def _real_p_idle(root):
-    """v7's load_all reads every series of v7; only P_idle is faked, through v7's own load_capture."""
+    """v7's load_all reads every series of v7 (with its runlogs); here it is replaced by v7's own load_capture on
+    P_idle only, so v7's runlog reading and its other series are not tried by these tests."""
     runlog = {run7.item_name("P_idle", int(ms)): "done" for ms in run7.CONTROLS_MS}
     return {"P_idle": [run7.load_capture(root, runlog, "P_idle", int(ms)) for ms in run7.CONTROLS_MS]}
 
@@ -233,6 +238,16 @@ def test_run_with_v7s_and_v7_loaders(tmp_path, monkeypatch):
     assert rec["known_gaps"]["F_K/50"]["hook"]["share_on_step_of_positive"] == 0.0
     assert "hook" not in rec["known_gaps"]["F_K_nohook/3"]
     assert rec["known_gaps"]["v7_P_idle/200"]["t"]["share_on_step_of_positive"] == 0.0
+    # the hook is described per series for machine captures, apart from the page: F_M2's hook on the step only
+    assert rec["series"]["F_M2_8B"]["hook/share_of_captures_on_step"] == 1.0
+    assert rec["series"]["F_M2_8B"]["h/share_of_captures_on_step"] == 0.0
+    assert rec["series"]["F_M0"]["hook/share_of_captures_on_step"] == 0.0
+    assert rec["series"]["F_M0"]["t/share_of_captures_on_step"] == 1.0
+    assert not any(k.startswith("hook/") for k in rec["series"]["F_H1"])
+    # 0 ms: every gap zero, no positive gap, on page and hook
+    for side in ("t", "h", "hook"):
+        m = rec["known_gaps"]["F_K/0"][side]
+        assert m["share_zero"] == 1.0 and m["share_on_step_of_positive"] is None and m["modes_of_positive"] == []
 
 
 def test_main_writes_once(tmp_path, monkeypatch):
@@ -271,6 +286,10 @@ def test_share_of_captures_at_exactly_the_bound():
     s = vt.series_summary(rows, machine=True)
     assert s["t/share_of_captures_on_step"] == pytest.approx(0.8)
     assert s["h/share_of_captures_on_step"] is None   # no capture with a positive gap on that side
+    mixed = [dict(r) for r in rows] + [dict(rows[0]) for _ in range(3)]
+    for r, v in zip(mixed, (0.9, 0.9, 0.89, None, None, 0.95, 0.95, 0.95)):
+        r["t"] = {**r["t"], "share_on_step_of_positive": v}
+    assert vt.series_summary(mixed, machine=True)["t/share_of_captures_on_step"] == pytest.approx(5 / 6)
 
 
 def test_a_press_with_a_nan_h_ms_stops(tmp_path):
