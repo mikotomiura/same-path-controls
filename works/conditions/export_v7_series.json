@@ -1,0 +1,25 @@
+{
+  "version": "export_v7_series",
+  "purpose": "Not an analysis: the release of paper B's series (Release paragraph of the manuscript). For every capture of v7's production run except the first author's typing (L0, L1_idle, L1_load), the kinds and times of the planned presses and of the presses recorded on the hook and on the page, as v7's analysis reads them. No value of v7, v7p, v7q or v7r is computed again or changed.",
+  "fixed_before_running": "Written on 2026-11-15, after v7's record and v7p-v7r, before any capture is read for the release (the researcher's decisions 16, 17 and 21 of .steering/20261113-v7-production-v4-returns: the plans are released with the recordings). Code: works/export_v7_series.py, committed with this file. It imports v7's analysis code at a6fa5ca unchanged (prototype_v7_run.load_all) and checks that the code and v7's conditions are those bytes. Amended before any capture was read, after the code review (Claude and Codex, 2026-11-15): a failed M1 capture's plan follows check_plans, the status file says whether a plan is released, every cell is checked against an allow-list before writing, the temporary folder is taken exclusively, and every file v7's analysis code lists is checked against HEAD. Amended again before any capture was read (2026-11-20, with the export of v7s's series): uv.lock may be a6fa5ca's or 7d02179's, whose only change is LightGBM 4.7.0 added for v7s (20 lines added, none removed); every other file of v7's analysis code and v7's conditions is still checked against a6fa5ca.",
+  "base": {"code_commit": "a6fa5cae45579c2b4cc95ccb938eab6ea622310e", "v7_conditions_sha256": "e5c21a4d5bcf8c5a3b6a2132c310f71b643d4907c6dcce706cefa3c723dbb91e"},
+  "series": {
+    "kupa_derived": ["H1_idle", "H1_load", "H1_rep", "M3a", "M3b"],
+    "not_kupa_derived": ["M0", "M1_8B", "M1_14B", "M1_replay_8B", "M1_replay_14B", "M2_8B", "M2_14B", "P_idle", "P_load", "P_nohook"],
+    "not_released": ["L0", "L1_idle", "L1_load"]
+  },
+  "licences": {
+    "kupa_derived": "CC BY-NC-SA 4.0, with attribution to KUPA-KEYS (Hugging Face ALTACambridge/KUPA-KEYS; LREC-COLING 2024) and a statement of how the series were made: H1's plans are KUPA persons' key-down times with the keys replaced by their kinds; M3's plans are KUPA donors' gaps placed on M1_8B's planned keys",
+    "not_kupa_derived": "CC BY 4.0"
+  },
+  "content": {
+    "layers": "plan (events.ndjson, or schedule.ndjson for M1), hook (hook.ndjson; absent for P_nohook) and page (page.ndjson), read by prototype_v7_run.load_all: counted kinds only (alnum, space, end, enter, backspace, delete, other), auto-repeats left out, in capture order, times in ms from the layer's first counted press, not sorted and with equal times kept (the analysis's cleaning is not applied)",
+    "rows": "one CSV per series, columns series, unit, layer, i, kind, t_ms; t_ms written with 6 decimals (whole ns of the hook while its clock, counted from boot, stays below 2^32 ms, about 49.7 days: measured on 2026-11-15 with v7's reading, no mismatch in 200,000 times at 49 days and mismatches of one ns at 60 days; a test checks 11 days)",
+    "units": "the unit names of the runlist (h00.., t00.., c005..): the index in the draw order of replay_H for H1, the text index for M0-M3 (text t is prompt P(t+1)), the control's gap in ms for P. No KUPA identifier",
+    "status": "status.csv: series, unit, status (captured / failed / no_plan), redone (true or false), plan (yes / no: whether plan rows are released). A failed capture's plan is released when the analysis keeps one: as in check_plans, a failed M1 capture whose schedule cannot be recomputed from llm.ndjson has no plan (v7's record: failed_without_plan). A no_plan unit has no row in the series file",
+    "manifest": "manifest.json: per file its SHA-256, rows and presses per layer; provenance (run time, HEAD, dirty, conditions and code SHA-256)"
+  },
+  "never_written": "keys or characters of any plan (Plan.keys: KUPA's essays, the LLM's essays, the first author's), text, prompts, KUPA identifiers, inject.ndjson, llm.ndjson, meta.json, runlogs, set-aside captures, L0 and L1",
+  "check_on_the_work_pc": "Before writing, the code checks every cell against an allow-list (series names of the release, unit names of the layout, layers, integers, the counted kinds, times of the 6-decimal form) and stops on any other cell; tests place a 60-character string, a key name, an identifier-like unit and a series under the wrong licence in copies and see each stopped. After the return, on the Mac: the files' SHA-256 against the manifest, the same allow-list read again, and the counts of status.csv against v7's record (captures per series and status).",
+  "output": "results/export_v7_series/ on the work PC: kupa-derived/<series>.csv, not-kupa-derived/<series>.csv, status.csv, manifest.json. The run refuses to write if the folder exists."
+}
