@@ -18,6 +18,8 @@ from pathlib import Path
 EXE = {
     "chrome": Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
     "edge": Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+    # v7s (works/conditions/prototype_v7s.json, captures.firefox): the second path, the page layer only differs
+    "firefox": Path(r"C:\Program Files\Mozilla Firefox\firefox.exe"),
 }
 TITLE = "v7 capture page"
 WM_IME_CONTROL = 0x0283
@@ -111,6 +113,79 @@ OFFLINE_FLAGS = [f"--host-resolver-rules={HOST_RULES}", "--disable-background-ne
                  "--disable-component-update", "--disable-domain-reliability", "--no-pings"]
 
 
+# Firefox (v7s): no command-line flags for these, so the new profile gets a user.js. Nothing here touches the timer
+# prefs (privacy.reduceTimerPrecision and its kin): the page runs at Firefox's default precision (captures.firefox).
+# The proxy sends every request but those to 127.0.0.1 to a port where nothing listens (localhost is not proxied:
+# network.proxy.allow_hijacking_localhost false), as Chrome's host rules leave only 127.0.0.1.
+FIREFOX_PREFS = {
+    "browser.shell.checkDefaultBrowser": False,
+    "browser.aboutwelcome.enabled": False,
+    "browser.startup.homepage_override.mstone": "ignore",
+    "startup.homepage_welcome_url": "",
+    "startup.homepage_welcome_url.additional": "",
+    "datareporting.policy.dataSubmissionEnabled": False,
+    "datareporting.healthreport.uploadEnabled": False,
+    "toolkit.telemetry.enabled": False,
+    "toolkit.telemetry.unified": False,
+    "app.normandy.enabled": False,
+    "app.shield.optoutstudies.enabled": False,
+    "app.update.auto": False,
+    "browser.safebrowsing.malware.enabled": False,
+    "browser.safebrowsing.phishing.enabled": False,
+    "browser.safebrowsing.downloads.enabled": False,
+    "network.captive-portal-service.enabled": False,
+    "network.connectivity-service.enabled": False,
+    "extensions.update.enabled": False,
+    "browser.search.update": False,
+    "network.proxy.type": 1,
+    "network.proxy.http": "127.0.0.1",
+    "network.proxy.http_port": 9,
+    "network.proxy.ssl": "127.0.0.1",
+    "network.proxy.ssl_port": 9,
+    "network.proxy.share_proxy_settings": True,
+    "network.proxy.no_proxies_on": "127.0.0.1",
+    "network.proxy.allow_hijacking_localhost": False,
+    "network.dns.disablePrefetch": True,
+    "network.prefetch-next": False,
+    # foreground() taps Alt to bring the window to the front; in Firefox on Windows a lone Alt would move the focus to
+    # the menu bar and the next letters would be read as its access keys (code review of 2026-11-15)
+    "ui.key.menuAccessKeyFocuses": False,
+    # R19 (the Firefox smoke of v7s on the work PC, 2026-11-18, handbook v8): Firefox 160 did not take a window brought
+    # to the front by a program as active, so document.hasFocus() stayed false and the checks stopped the capture
+    # before any press (four tries; a real mouse click made it true). In test mode Firefox emulates the raise of its
+    # window (nsFocusManager::RaiseWindow -> WindowRaised) and does not lower it when the system deactivates it
+    # (AppWindow::WindowDeactivated). The pref is read only in nsFocusManager.cpp and AppWindow.cpp (searchfox,
+    # 2026-11-18); WebDriver sets it too (remote/shared/RecommendedPreferences.sys.mjs). So in Firefox the page's
+    # has_focus no longer shows that the system activated the window: the foreground is checked by the system
+    # before every press (inject.type_schedule's guard_hwnd), and the page's count and kinds are read after (R8, R16).
+    "focusmanager.testmode": True,
+    # R20 (the smoke of handbook v9 on the work PC, 2026-11-18): with R19 the checks still stopped every Firefox capture
+    # before any press. A screenshot showed why: a new profile of Firefox 160.0.1 opens a modal 'Welcome to Firefox'
+    # (terms of use and data collection notice, with a Continue button) over the page; it holds the focus, so no
+    # synthetic key or click reached the page until a person clicked. Any one of these three prefs kept it from opening
+    # (each tried alone, and a control without them stopped again); all three are set.
+    "browser.preonboarding.enabled": False,
+    "termsofuse.bypassNotification": True,
+    "datareporting.policy.dataSubmissionPolicyBypassNotification": True,
+    "datareporting.policy.firstRunURL": "",
+    "toolkit.telemetry.reportingpolicy.firstRun": False,
+    "browser.startup.page": 0,
+    "browser.sessionstore.resume_from_crash": False,
+}
+
+
+def user_js(prefs: dict = FIREFOX_PREFS) -> str:
+    """The text of user.js: one user_pref line per pref (JSON's quoting is valid for user.js)."""
+    import json
+    return "".join(f"user_pref({json.dumps(k)}, {json.dumps(v)});\n" for k, v in prefs.items())
+
+
+def user_js_sha256(profile: Path) -> str:
+    """The SHA-256 of the user.js a Firefox capture runs with (R19: written to meta.json; the profile is deleted)."""
+    import hashlib
+    return hashlib.sha256((Path(profile) / "user.js").read_bytes()).hexdigest()
+
+
 def stale_profiles(tmp: Path | None = None) -> list[Path]:
     """Temporary profiles left by an earlier capture (a capture that crashed before deleting its profile)."""
     tmp = Path(tempfile.gettempdir()) if tmp is None else Path(tmp)
@@ -139,13 +214,19 @@ class Browser:
         self.exe = EXE[name]
         self.version = file_version(self.exe)
         self.profile = Path(tempfile.mkdtemp(prefix=PROFILE_PREFIX))
+        if name == "firefox":
+            (self.profile / "user.js").write_text(user_js(), encoding="utf-8", newline="\n")
         self.proc: subprocess.Popen | None = None
         self.started_ns: int | None = None
 
     def args(self) -> list[str]:
         """--app opens the page in a window with no address bar and no tabs, so that no press can reach an address
         bar (Mac review of 2026-11-04). --incognito in the live capture (L0). The list is written to meta.json as
-        it is passed."""
+        it is passed. Firefox (v7s) has no --app: -kiosk opens the page full screen with no address bar or tabs."""
+        if self.name == "firefox":
+            if self.incognito:
+                raise ValueError("the live capture (L0) is not taken in Firefox")
+            return [str(self.exe), "-profile", str(self.profile), "-no-remote", "-kiosk", self.url]
         return ([str(self.exe), f"--user-data-dir={self.profile}", "--no-first-run", "--no-default-browser-check",
                  "--disable-extensions", "--disable-sync", "--disable-translate", *OFFLINE_FLAGS]
                 + (["--incognito"] if self.incognito else []) + [f"--app={self.url}"])

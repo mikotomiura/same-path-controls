@@ -1,0 +1,2622 @@
+{
+ "valid": {
+  "D1": true,
+  "D2_lr": true,
+  "D2_rf": true,
+  "D3": true,
+  "D4": false,
+  "D5": false,
+  "D6": true
+ },
+ "agreement_t_with_v7s": {
+  "cells": 224,
+  "cells_not_as_v7s": 0,
+  "first_not_as_v7s": [],
+  "human": {
+   "cells": 28,
+   "cells_not_as_v7s": 0,
+   "first_not_as_v7s": []
+  },
+  "path_sd_entries_not_as_v7s": 0
+ },
+ "firefox_page_path_sd": {
+  "t": {
+   "0": 0.8314794192830981,
+   "1": 1.0896127107256963,
+   "2": 0.7301657961338301,
+   "3": 0.6926691718253543,
+   "5": 0.7803061350080036,
+   "18": 5.698285219118327,
+   "50": 5.990984217296178,
+   "100": 7.372126433265231,
+   "200": 6.009993337751691
+  },
+  "h": {
+   "0": 0.24444468494259214,
+   "1": 0.38745747094432315,
+   "2": 0.4418893053386412,
+   "3": 0.57299591649183,
+   "5": 0.8747837403236739,
+   "18": 1.0114440246553473,
+   "50": 0.9059916229308198,
+   "100": 1.202265127762354,
+   "200": 1.3758240770134416
+  }
+ },
+ "firefox_verdict": {
+  "t": {
+   "1": {
+    "cells_with_two_decided_readings": 14,
+    "cells_disagreeing": 0,
+    "sessions": 847,
+    "sessions_differing": 14,
+    "sessions_differing_share": 0.01652892561983471,
+    "verdict": "held"
+   },
+   "0.5": {
+    "cells_with_two_decided_readings": 14,
+    "cells_disagreeing": 0,
+    "sessions": 847,
+    "sessions_differing": 27,
+    "sessions_differing_share": 0.031877213695395513,
+    "verdict": "held"
+   },
+   "2": {
+    "cells_with_two_decided_readings": 14,
+    "cells_disagreeing": 0,
+    "sessions": 847,
+    "sessions_differing": 14,
+    "sessions_differing_share": 0.01652892561983471,
+    "verdict": "held"
+   }
+  },
+  "h": {
+   "1": {
+    "cells_with_two_decided_readings": 19,
+    "cells_disagreeing": 0,
+    "sessions": 944,
+    "sessions_differing": 0,
+    "sessions_differing_share": 0.0,
+    "verdict": "held"
+   },
+   "0.5": {
+    "cells_with_two_decided_readings": 19,
+    "cells_disagreeing": 0,
+    "sessions": 944,
+    "sessions_differing": 3,
+    "sessions_differing_share": 0.0031779661016949155,
+    "verdict": "held"
+   },
+   "2": {
+    "cells_with_two_decided_readings": 18,
+    "cells_disagreeing": 0,
+    "sessions": 944,
+    "sessions_differing": 14,
+    "sessions_differing_share": 0.014830508474576272,
+    "verdict": "held"
+   }
+  }
+ },
+ "verdict_all": {
+  "t": {
+   "1": {
+    "all": {
+     "cells_with_two_decided_readings": 54,
+     "cells_disagreeing": 0,
+     "sessions": 2447,
+     "sessions_differing": 14,
+     "sessions_differing_share": 0.005721291377196567,
+     "verdict": "held"
+    },
+    "D1": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 14,
+     "sessions_differing_share": 0.029411764705882353,
+     "verdict": "held"
+    },
+    "D2_lr": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D2_rf": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D3": {
+     "cells_with_two_decided_readings": 12,
+     "cells_disagreeing": 0,
+     "sessions": 514,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D6": {
+     "cells_with_two_decided_readings": 12,
+     "cells_disagreeing": 0,
+     "sessions": 505,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    }
+   },
+   "0.5": {
+    "all": {
+     "cells_with_two_decided_readings": 54,
+     "cells_disagreeing": 0,
+     "sessions": 2447,
+     "sessions_differing": 27,
+     "sessions_differing_share": 0.011033919084593379,
+     "verdict": "held"
+    },
+    "D1": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 27,
+     "sessions_differing_share": 0.05672268907563025,
+     "verdict": "held"
+    },
+    "D2_lr": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D2_rf": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D3": {
+     "cells_with_two_decided_readings": 12,
+     "cells_disagreeing": 0,
+     "sessions": 514,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D6": {
+     "cells_with_two_decided_readings": 12,
+     "cells_disagreeing": 0,
+     "sessions": 505,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    }
+   },
+   "2": {
+    "all": {
+     "cells_with_two_decided_readings": 54,
+     "cells_disagreeing": 1,
+     "sessions": 2447,
+     "sessions_differing": 54,
+     "sessions_differing_share": 0.022067838169186758,
+     "verdict": "failed"
+    },
+    "D1": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 1,
+     "sessions": 476,
+     "sessions_differing": 54,
+     "sessions_differing_share": 0.1134453781512605,
+     "verdict": "failed"
+    },
+    "D2_lr": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D2_rf": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D3": {
+     "cells_with_two_decided_readings": 12,
+     "cells_disagreeing": 0,
+     "sessions": 514,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D6": {
+     "cells_with_two_decided_readings": 12,
+     "cells_disagreeing": 0,
+     "sessions": 505,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    }
+   }
+  },
+  "h": {
+   "1": {
+    "all": {
+     "cells_with_two_decided_readings": 59,
+     "cells_disagreeing": 0,
+     "sessions": 2544,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D1": {
+     "cells_with_two_decided_readings": 11,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D2_lr": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D2_rf": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D3": {
+     "cells_with_two_decided_readings": 14,
+     "cells_disagreeing": 0,
+     "sessions": 558,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D6": {
+     "cells_with_two_decided_readings": 14,
+     "cells_disagreeing": 0,
+     "sessions": 558,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    }
+   },
+   "0.5": {
+    "all": {
+     "cells_with_two_decided_readings": 59,
+     "cells_disagreeing": 0,
+     "sessions": 2544,
+     "sessions_differing": 3,
+     "sessions_differing_share": 0.0011792452830188679,
+     "verdict": "held"
+    },
+    "D1": {
+     "cells_with_two_decided_readings": 11,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 3,
+     "sessions_differing_share": 0.0063025210084033615,
+     "verdict": "held"
+    },
+    "D2_lr": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D2_rf": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D3": {
+     "cells_with_two_decided_readings": 14,
+     "cells_disagreeing": 0,
+     "sessions": 558,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D6": {
+     "cells_with_two_decided_readings": 14,
+     "cells_disagreeing": 0,
+     "sessions": 558,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    }
+   },
+   "2": {
+    "all": {
+     "cells_with_two_decided_readings": 58,
+     "cells_disagreeing": 1,
+     "sessions": 2544,
+     "sessions_differing": 54,
+     "sessions_differing_share": 0.02122641509433962,
+     "verdict": "failed"
+    },
+    "D1": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 1,
+     "sessions": 476,
+     "sessions_differing": 54,
+     "sessions_differing_share": 0.1134453781512605,
+     "verdict": "failed"
+    },
+    "D2_lr": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D2_rf": {
+     "cells_with_two_decided_readings": 10,
+     "cells_disagreeing": 0,
+     "sessions": 476,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D3": {
+     "cells_with_two_decided_readings": 14,
+     "cells_disagreeing": 0,
+     "sessions": 558,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    },
+    "D6": {
+     "cells_with_two_decided_readings": 14,
+     "cells_disagreeing": 0,
+     "sessions": 558,
+     "sessions_differing": 0,
+     "sessions_differing_share": 0.0,
+     "verdict": "held"
+    }
+   }
+  }
+ },
+ "firefox_cells": {
+  "t": {
+   "F_M0/hook/D1": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/hook/D2_lr": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/hook/D2_rf": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/hook/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/hook/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M0/hook/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M0/hook/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D1": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D2_lr": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D2_rf": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M0/page/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M0/page/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_8B/hook/D1": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/hook/D2_lr": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/hook/D2_rf": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/hook/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/hook/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": false
+   },
+   "F_M2_8B/hook/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": false
+   },
+   "F_M2_8B/hook/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D1": {
+    "observed": "undecided",
+    "predicted": "responds",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     13,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D2_lr": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D2_rf": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D3": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     22
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     22
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 18,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D4": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": false
+   },
+   "F_M2_8B/page/D5": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": false
+   },
+   "F_M2_8B/page/D6": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     15
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     15
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 25,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_14B/hook/D1": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/hook/D2_lr": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/hook/D2_rf": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/hook/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/hook/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M2_14B/hook/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M2_14B/hook/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D1": {
+    "observed": "undecided",
+    "predicted": "responds",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     7,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D2_lr": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D2_rf": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D3": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D4": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M2_14B/page/D5": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M2_14B/page/D6": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     11
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     11
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 28,
+    "extrapolated": 0,
+    "valid": true
+   }
+  },
+  "h": {
+   "F_M0/hook/D1": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/hook/D2_lr": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/hook/D2_rf": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/hook/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/hook/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M0/hook/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M0/hook/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D1": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D2_lr": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D2_rf": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M0/page/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M0/page/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M0/page/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_8B/hook/D1": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/hook/D2_lr": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/hook/D2_rf": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/hook/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/hook/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": false
+   },
+   "F_M2_8B/hook/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": false
+   },
+   "F_M2_8B/hook/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D1": {
+    "observed": "responds",
+    "predicted": "responds",
+    "observed_bc": [
+     0,
+     11,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     11,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D2_lr": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D2_rf": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     25
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     25
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 15,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_8B/page/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": false
+   },
+   "F_M2_8B/page/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": false
+   },
+   "F_M2_8B/page/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     40
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     40
+    ],
+    "left_out_no_plan": 0,
+    "left_out_other": 0,
+    "extrapolated": 4,
+    "valid": true
+   },
+   "F_M2_14B/hook/D1": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/hook/D2_lr": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/hook/D2_rf": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/hook/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/hook/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M2_14B/hook/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M2_14B/hook/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D1": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     3,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     3,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D2_lr": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D2_rf": {
+    "observed": "undecided",
+    "predicted": "undecided",
+    "observed_bc": [
+     0,
+     0,
+     13
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     13
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 26,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D3": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   },
+   "F_M2_14B/page/D4": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M2_14B/page/D5": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": false
+   },
+   "F_M2_14B/page/D6": {
+    "observed": "not changed",
+    "predicted": "not changed",
+    "observed_bc": [
+     0,
+     0,
+     39
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     39
+    ],
+    "left_out_no_plan": 1,
+    "left_out_other": 0,
+    "extrapolated": 0,
+    "valid": true
+   }
+  }
+ },
+ "f_h1": {
+  "t": {
+   "F_H1/hook/D1": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D2_lr": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D2_rf": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D3": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D4": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D5": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D6": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D1": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D2_lr": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D2_rf": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D3": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D4": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D5": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     1,
+     10
+    ]
+   },
+   "F_H1/page/D6": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   }
+  },
+  "h": {
+   "F_H1/hook/D1": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D2_lr": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D2_rf": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D3": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D4": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D5": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/hook/D6": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D1": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D2_lr": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D2_rf": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D3": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D4": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D5": {
+    "observed_bc": [
+     0,
+     1,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   },
+   "F_H1/page/D6": {
+    "observed_bc": [
+     0,
+     0,
+     10
+    ],
+    "predicted_bc": [
+     0,
+     0,
+     10
+    ]
+   }
+  }
+ },
+ "time_choice": {
+  "cells": {
+   "F_M0/page/D1": {
+    "t": "not changed",
+    "h": "not changed",
+    "t_bc": [
+     0,
+     0,
+     40
+    ],
+    "h_bc": [
+     0,
+     0,
+     40
+    ]
+   },
+   "F_M0/page/D2_lr": {
+    "t": "not changed",
+    "h": "not changed",
+    "t_bc": [
+     0,
+     0,
+     40
+    ],
+    "h_bc": [
+     0,
+     0,
+     40
+    ]
+   },
+   "F_M0/page/D2_rf": {
+    "t": "not changed",
+    "h": "not changed",
+    "t_bc": [
+     0,
+     0,
+     40
+    ],
+    "h_bc": [
+     0,
+     0,
+     40
+    ]
+   },
+   "F_M0/page/D3": {
+    "t": "not changed",
+    "h": "not changed",
+    "t_bc": [
+     0,
+     0,
+     40
+    ],
+    "h_bc": [
+     0,
+     0,
+     40
+    ]
+   },
+   "F_M0/page/D6": {
+    "t": "not changed",
+    "h": "not changed",
+    "t_bc": [
+     0,
+     0,
+     40
+    ],
+    "h_bc": [
+     0,
+     0,
+     40
+    ]
+   },
+   "F_M2_14B/page/D1": {
+    "t": "undecided",
+    "h": "undecided",
+    "t_bc": [
+     0,
+     0,
+     13
+    ],
+    "h_bc": [
+     0,
+     3,
+     13
+    ]
+   },
+   "F_M2_14B/page/D2_lr": {
+    "t": "undecided",
+    "h": "undecided",
+    "t_bc": [
+     0,
+     0,
+     13
+    ],
+    "h_bc": [
+     0,
+     0,
+     13
+    ]
+   },
+   "F_M2_14B/page/D2_rf": {
+    "t": "undecided",
+    "h": "undecided",
+    "t_bc": [
+     0,
+     0,
+     13
+    ],
+    "h_bc": [
+     0,
+     0,
+     13
+    ]
+   },
+   "F_M2_14B/page/D3": {
+    "t": "undecided",
+    "h": "not changed",
+    "t_bc": [
+     0,
+     0,
+     13
+    ],
+    "h_bc": [
+     0,
+     0,
+     39
+    ]
+   },
+   "F_M2_14B/page/D6": {
+    "t": "undecided",
+    "h": "not changed",
+    "t_bc": [
+     0,
+     0,
+     11
+    ],
+    "h_bc": [
+     0,
+     0,
+     39
+    ]
+   },
+   "F_M2_8B/page/D1": {
+    "t": "undecided",
+    "h": "responds",
+    "t_bc": [
+     0,
+     0,
+     25
+    ],
+    "h_bc": [
+     0,
+     11,
+     25
+    ]
+   },
+   "F_M2_8B/page/D2_lr": {
+    "t": "undecided",
+    "h": "undecided",
+    "t_bc": [
+     0,
+     0,
+     25
+    ],
+    "h_bc": [
+     0,
+     0,
+     25
+    ]
+   },
+   "F_M2_8B/page/D2_rf": {
+    "t": "undecided",
+    "h": "undecided",
+    "t_bc": [
+     0,
+     0,
+     25
+    ],
+    "h_bc": [
+     0,
+     0,
+     25
+    ]
+   },
+   "F_M2_8B/page/D3": {
+    "t": "undecided",
+    "h": "not changed",
+    "t_bc": [
+     0,
+     0,
+     22
+    ],
+    "h_bc": [
+     0,
+     0,
+     40
+    ]
+   },
+   "F_M2_8B/page/D6": {
+    "t": "undecided",
+    "h": "not changed",
+    "t_bc": [
+     0,
+     0,
+     15
+    ],
+    "h_bc": [
+     0,
+     0,
+     40
+    ]
+   }
+  },
+  "cells_decided_in_both": 5,
+  "cells_differing": 0,
+  "reading": "not decided"
+ },
+ "sessions_differing_t_h": {
+  "F_M0/page/D1": {
+   "judged_in_both": 40,
+   "differing": 0
+  },
+  "F_M0/page/D2_lr": {
+   "judged_in_both": 40,
+   "differing": 0
+  },
+  "F_M0/page/D2_rf": {
+   "judged_in_both": 40,
+   "differing": 0
+  },
+  "F_M0/page/D3": {
+   "judged_in_both": 40,
+   "differing": 0
+  },
+  "F_M0/page/D4": {
+   "judged_in_both": 40,
+   "differing": 0
+  },
+  "F_M0/page/D5": {
+   "judged_in_both": 40,
+   "differing": 0
+  },
+  "F_M0/page/D6": {
+   "judged_in_both": 40,
+   "differing": 0
+  },
+  "F_M2_8B/page/D1": {
+   "judged_in_both": 40,
+   "differing": 18
+  },
+  "F_M2_8B/page/D2_lr": {
+   "judged_in_both": 40,
+   "differing": 2
+  },
+  "F_M2_8B/page/D2_rf": {
+   "judged_in_both": 40,
+   "differing": 0
+  },
+  "F_M2_8B/page/D3": {
+   "judged_in_both": 22,
+   "differing": 0
+  },
+  "F_M2_8B/page/D4": {
+   "judged_in_both": 25,
+   "differing": 0
+  },
+  "F_M2_8B/page/D5": {
+   "judged_in_both": 25,
+   "differing": 0
+  },
+  "F_M2_8B/page/D6": {
+   "judged_in_both": 15,
+   "differing": 0
+  },
+  "F_M2_14B/page/D1": {
+   "judged_in_both": 39,
+   "differing": 18
+  },
+  "F_M2_14B/page/D2_lr": {
+   "judged_in_both": 39,
+   "differing": 17
+  },
+  "F_M2_14B/page/D2_rf": {
+   "judged_in_both": 39,
+   "differing": 1
+  },
+  "F_M2_14B/page/D3": {
+   "judged_in_both": 13,
+   "differing": 0
+  },
+  "F_M2_14B/page/D4": {
+   "judged_in_both": 13,
+   "differing": 0
+  },
+  "F_M2_14B/page/D5": {
+   "judged_in_both": 13,
+   "differing": 0
+  },
+  "F_M2_14B/page/D6": {
+   "judged_in_both": 11,
+   "differing": 0
+  },
+  "F_H1/page/D1": {
+   "judged_in_both": 10,
+   "differing": 0
+  },
+  "F_H1/page/D2_lr": {
+   "judged_in_both": 10,
+   "differing": 0
+  },
+  "F_H1/page/D2_rf": {
+   "judged_in_both": 10,
+   "differing": 0
+  },
+  "F_H1/page/D3": {
+   "judged_in_both": 10,
+   "differing": 0
+  },
+  "F_H1/page/D4": {
+   "judged_in_both": 10,
+   "differing": 0
+  },
+  "F_H1/page/D5": {
+   "judged_in_both": 10,
+   "differing": 1
+  },
+  "F_H1/page/D6": {
+   "judged_in_both": 10,
+   "differing": 0
+  }
+ },
+ "cells_changed_outside_firefox_page": 0,
+ "data_sha256": {
+  "essay": "4ad24cbf78879f2fb45c1334eb827f2c8c2fada09a957252a4c86b8e20f28aef",
+  "copy": "b26ad0fca7e34f8f4e87dccd0c04b95adc082cc8db4f87dc6be8d6224f5f10f2"
+ },
+ "provenance": {
+  "run_at": "2026-11-20T06:57:02+00:00",
+  "git_commit": "ba4bfc8a153c11d56e3c0f52ee291bf99f883268",
+  "git_dirty": false,
+  "conditions_sha256": "f15f14b61474d1b57cb79dd4b2325908d0cd3e3474bfa7f7cffbc96c0de97786",
+  "code_sha256": {
+   "works/prototype_v7u.py": "9f98c6648fcf2ec9084c6bf2885bc121ec290b10d0bd1ac0e4529d7ddd29b30e",
+   "works/prototype_v7s.py": "68c1c480fa07e352cd666997c6b56b87eb9b950760cff152f596dc06258fe313",
+   "works/prototype_v7s_plan.py": "630c420077627d47277054e6f70b129bc780df2c827dae9f53dcc4a8506b0e20",
+   "works/conditions/prototype_v7s.json": "15ffe9459ad6ac68966d6a4f1a0ec89c24e3fbd14e7a391f2b88ceac73e94672",
+   "works/prototype_v7_run.py": "b4e15ba0a339b1c0b2b3c6fe6fbab88aa3f8d54e07f91d4ae311c43767b9611c",
+   "works/prototype_v7_plan.py": "58cbe8ef17a5f8d4eefbda27edda9ea5da2b91a6cc00f2df5d54514797bf2fe5",
+   "works/prototype_v7.py": "799667f0196c8eeaf3769c29631b45d848ebd18f3e22f3d86c30d6cc944f26bf",
+   "works/prototype_v6.py": "3da72fb2e10c2c55e4846b9e4b78bf765e05e23131200197ec362d3a2290ef22",
+   "works/_common.py": "5f840d73e8b2ecbf092cab8fa7b06d8ab74eb25c1742a21d979d68c4b0c48ed1",
+   "capture/events.py": "4c24b1cd6bab7cd6a3ff1449cb45b8a3ba4184380a417b61ea1d5213d31f53b6",
+   "works/prototype_v7t.py": "f45e8d55fa6726d124f8cedba598692502aa05eacd6bb6efe5b1e769b98d083b"
+  },
+  "v7s_record_sha256": "9ff1d37a64ef12f603fc41a144ee14e9d084457cb374640000c09603848c27ce"
+ }
+}
