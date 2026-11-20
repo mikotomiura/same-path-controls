@@ -753,10 +753,11 @@ def read_series(v7caps: dict, v7s_root: Path, runlog: dict[str, str], h0: list[S
     versions["F_H1"] = check_browsers(caps, "firefox")
     if kinds_out is not None:
         kinds_out["F_H1"] = check_kinds("F_H1", caps)
-        kinds_out["firefox_version"] = next(iter(ff), None)
     ff = {v for k, v in versions.items() if k.startswith("F_") and v is not None}
     if len(ff) > 1:
         raise RunStop(f"Firefox series on more than one version: {sorted(ff)}")
+    if kinds_out is not None:   # after ff is set (the first analysis on the work PC, 2026-11-19, stopped here)
+        kinds_out["firefox_version"] = next(iter(ff), None)
     out["F_H1"] = series_from_caps("F_H1", caps, "firefox", base_override=h0[: len(caps)])
     out["F_H1"].margins_of = "H0"
     return out

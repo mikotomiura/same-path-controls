@@ -699,3 +699,17 @@ def test_read_series_runs_r8(monkeypatch):
     monkeypatch.setattr(s7, "unit_caps", fake)
     with pytest.raises(s7.RunStop, match="lost or changed in kind"):
         s7.read_series(v7caps, Path("."), runlog, [sess(np.ones(3))] * run7.N_H, {})
+
+
+def test_read_series_with_kinds_out_reaches_the_end(monkeypatch):
+    # the first analysis on the work PC (2026-11-19) stopped in read_series: kinds_out["firefox_version"] read ff before
+    # ff was set (UnboundLocalError); only the path with kinds_out (main's) went there
+    n = run7.N_TEXTS
+    none = lambda s_, k: [run7.Capture(s_, i, "no_plan") for i in range(k)]   # noqa: E731
+    v7caps = {s_: none(s_, n) for s_ in run7.MACHINE}
+    v7caps["H1_idle"] = none("H1_idle", run7.N_H)
+    runlog = {nm: "done" for nm in s7.expected_items(v7caps)}
+    monkeypatch.setattr(s7, "unit_caps", lambda root, rl, series, units, fmt: [run7.Capture(series, u, "no_plan") for u in units])
+    kinds: dict = {}
+    s7.read_series(v7caps, Path("."), runlog, [sess(np.ones(3))] * run7.N_H, kinds)
+    assert "firefox_version" in kinds and kinds["firefox_version"] is None
