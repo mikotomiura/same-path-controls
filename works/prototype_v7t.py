@@ -14,6 +14,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -53,8 +54,9 @@ def page_times(path: Path) -> tuple[np.ndarray, np.ndarray]:
     for r in run7.read_ndjson(path):
         if r.get("type") != "key" or r.get("repeat") or r.get("kind") not in run7.COUNTED_KINDS:
             continue
-        if not isinstance(r.get("h_ms"), (int, float)) or isinstance(r.get("h_ms"), bool):
-            raise run7.RunStop(f"{path}: a counted press without h_ms")
+        h_ms = r.get("h_ms")
+        if not isinstance(h_ms, (int, float)) or isinstance(h_ms, bool) or not math.isfinite(h_ms):
+            raise run7.RunStop(f"{path}: a counted press without a finite h_ms")
         t.append(float(r["t_ms"]))
         h.append(float(r["h_ms"]))
     t_, h_ = np.asarray(t, dtype=float), np.asarray(h, dtype=float)
@@ -98,6 +100,8 @@ def capture_measures(cap: run7.Capture, planned_ms: float | None, machine: bool)
     t, h = page_times(cap.folder / "page.ndjson")
     lag = h - t
     out = {"t": gap_measures(t, machine), "h": gap_measures(h, machine), "n_presses": int(t.size)}
+    if machine and "hook" in cap.layers:   # the injection's own times (QPC), described beside the page's, not read
+        out["hook"] = gap_measures(cap.layers["hook"].times, True)
     if machine:
         out["lag_h_minus_t_ms"] = run7.summary(lag, ends=True)
     else:   # a person's capture: its lag enters the series' summary only
@@ -166,6 +170,15 @@ def readings(known: dict[str, dict]) -> dict:
 # ---------------------------------------------------------------- the run
 
 
+def base_check(c: dict) -> None:
+    """The conditions' base names the commits the code checks against, and v7s's conditions as deposited."""
+    b = c["base"]
+    if (b["v7_commit"], b["v7s_commit"]) != (V7_COMMIT, V7S_COMMIT):
+        raise SystemExit("the conditions' base commits are not the code's")
+    if cm.sha256(ROOT / "works" / "conditions" / "prototype_v7s.json") != b["v7s_conditions_sha256"]:
+        raise SystemExit("works/conditions/prototype_v7s.json is not the conditions' base")
+
+
 def code_check() -> None:
     for commit, files in ((V7_COMMIT, V7_CODE), (V7S_COMMIT, V7S_CODE)):
         for f in files:
@@ -214,6 +227,7 @@ def main(argv: list[str] | None = None) -> None:
     code_check()
     raw = COND.read_bytes()
     c = json.loads(raw)
+    base_check(c)
     if (c["reading"]["step_ms"], c["reading"]["tolerance_ms"], c["reading"]["on_step_at_least"],
             c["reading"]["off_step_at_most"]) != (STEP_MS, STEP_TOL_MS, ON_STEP_AT_LEAST, OFF_STEP_AT_MOST):
         raise SystemExit("the code's constants are not the conditions'")
