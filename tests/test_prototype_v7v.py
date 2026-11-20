@@ -152,6 +152,7 @@ def test_margin_table():
     assert m0["by_judgment"]["human"]["sessions"] == 3 and m0["by_judgment"]["human"]["none"] == 1
     h0 = out["H0/D6"]
     assert h0["margin_sd_ms"] == {"n": 3}                               # persons: the count only below 5
+    assert m0["judgment_not_as_margin"] == 0 and h0["judgment_not_as_margin"] == 0
     assert "M0/D4" not in out and "M0/D5" not in out
     big = {"H0": {"D6": [float(i) for i in range(1, 21)]}}
     hb = vv.margin_table(big, {"H0": {"D6": np.full(20, 0.9)}}, {"D6": True})["H0/D6"]["margin_sd_ms"]
@@ -205,6 +206,9 @@ def test_reproduction_all_as_deposited():
      "v7u_firefox_cells_h"),
     (lambda r, t, j, s, u: r["h"]["human"]["1"]["F_H1/page/D1"].update(observed_bc=[0, 2, 10]), "v7u_f_h1_h"),
     (lambda r, t, j, s, u: s["criterion"]["1"]["cells"].pop("MC1/page/D1"), "v7s_cells_1"),
+    (lambda r, t, j, s, u: r["t"]["crit"]["2"]["cells"]["MC1/page/D1"].update(predicted="responds"), "v7s_cells_2"),
+    (lambda r, t, j, s, u: r["t"]["human"]["1"]["H1_idle/page/D1"].update(predicted="y"), "v7s_human_1"),
+    (lambda r, t, j, s, u: r["h"]["human"]["1"]["F_H1/page/D1"].update(predicted_bc=[1, 0, 10]), "v7u_f_h1_h"),
 ])
 def test_reproduction_finds_each_difference(change, part):
     args = _res_and_records()
@@ -222,12 +226,8 @@ def test_record_parts_stop_before_scoring():
     with pytest.raises(SystemExit, match="every theta"):
         vv.v7s_record_parts({"criterion": {"1": {"cells": {}}}, "criterion_human": {"1": {}},
                              "perturbation_jitter": {}, "valid": VALID})
-    full = {"criterion": {th: {"cells": {}} for th in ("1", "0.5", "2")},
-            "criterion_human": {th: {} for th in ("1", "0.5", "2")}, "perturbation_jitter": {}, "valid": VALID}
-    vv.v7s_record_parts(full)
     with pytest.raises(SystemExit):
-        vv.v7s_record_parts({**full, "valid": {**VALID, "D5": True}})
-    vv.v7u_record_shape({"firefox_cells": {"t": {}, "h": {}}, "f_h1": {"t": {}, "h": {}}})
+        vv.v7s_record_parts({**s, "valid": {**VALID, "D5": True}} if s is not None else {})
     with pytest.raises(SystemExit, match="v7u's record"):
         vv.v7u_record_shape({"firefox_cells": {"t": {}}, "f_h1": {"t": {}, "h": {}}})
 
@@ -264,7 +264,7 @@ def test_run_order(monkeypatch):
     rec = vv.run(Path("."), Path("."), {}, {})
     assert calls == ["v7s_shape", "v7s_parts", "v7u_shape", "runlogs", "persons", "load_t", "load_h", "bases",
                      "sources_t", "margins", "score_t", "score_h", "source_scores"]
-    assert set(rec) == {"valid", "reproduction", "judged", "in_cell", "margins", "data_sha256"}
+    assert set(rec) == {"valid", "reproduction", "usable", "judged", "in_cell", "margins", "data_sha256"}
 
 
 def test_run_stops_on_another_validity_before_loading(monkeypatch):
@@ -318,3 +318,140 @@ def test_main_checks_the_conditions_base_before_the_records(tmp_path, monkeypatc
     monkeypatch.setattr(vv, "run", lambda *a: pytest.fail("run() reached without the base check"))
     with pytest.raises(SystemExit, match="base checked"):
         vv.main(["--v7-captures", str(tmp_path), "--v7s-captures", str(tmp_path)])
+
+
+def test_margin_table_persons_split_only_with_21_on_both_sides():
+    def table(n_machine, n_human, name="H0"):
+        ms = [0.1 * (i + 1) for i in range(n_machine + n_human)]
+        sc = np.array([0.9] * n_machine + [0.1] * n_human)
+        return vv.margin_table({name: {"D6": ms}}, {name: {"D6": sc}}, {"D6": True})[f"{name}/D6"]
+    for name in ("H0", "M3a", "M3b"):
+        t = table(8, 72, name)
+        assert t["by_judgment"]["machine"]["margin_sd_ms"] == {"n": 8}
+        assert t["by_judgment"]["human"]["margin_sd_ms"] == {"n": 72}   # the other side too (whole minus a side)
+        assert "min" not in t["margin_sd_ms"] and t["margin_sd_ms"]["n"] == 80
+        t = table(21, 59, name)
+        assert "median" in t["by_judgment"]["machine"]["margin_sd_ms"]
+        assert "min" not in t["by_judgment"]["machine"]["margin_sd_ms"]
+    t = table(2, 78, "M0")                                               # plans: ends, but the count below 5
+    assert t["by_judgment"]["machine"]["margin_sd_ms"] == {"n": 2}
+    assert t["by_judgment"]["human"]["margin_sd_ms"]["min"] == pytest.approx(0.3)
+
+
+def test_margin_table_counts_judgment_not_as_margin():
+    out = vv.margin_table({"M0": {"D6": [0.1, None, 0.2]}}, {"M0": {"D6": np.array([0.9, 0.9, np.nan])}},
+                          {"D6": True})
+    assert out["M0/D6"]["judgment_not_as_margin"] == 2
+
+
+def test_in_cell_counts_needs_both_judgments_even_if_keep_says_otherwise():
+    kept = {"MC1/page/D3": (np.array([0.9, 0.9, np.nan]), np.array([0.9, np.nan, 0.9]), np.array([True] * 3))}
+    ic, _, _ = vv.in_cell_counts({"MC1/page/D3": {"observed_bc": [0, 0, 1]}}, kept, VALID)
+    assert ic["MC1/page/D3"]["n"] == 1
+
+
+def test_record_keys_are_checked_before_scoring():
+    full = {"criterion": {th: {"cells": {k: {} for k in vv.expected_keys(s7.MACHINE_SERIES_ALL, run7.LAYERS,
+                                                                          s7.DETECTORS)}} for th in ("1", "0.5", "2")},
+            "criterion_human": {th: {k: {} for k in vv.expected_keys(s7.HUMAN_SERIES, run7.LAYERS, s7.DETECTORS)}
+                                for th in ("1", "0.5", "2")},
+            "perturbation_jitter": {f"{m}/{d}": {} for m in vv.MARGIN_SOURCES for d in s7.DETECTORS}, "valid": VALID}
+    vv.v7s_record_parts(full)
+    for part in ("cells", "human", "jitter"):
+        bad = json.loads(json.dumps(full))
+        if part == "cells":
+            bad["criterion"]["0.5"]["cells"].pop("MC1/page/D6")
+        elif part == "human":
+            bad["criterion_human"]["2"]["F_H1/page/D6"] = None
+            bad["criterion_human"]["2"]["X/page/D6"] = {}
+        else:
+            bad["perturbation_jitter"].pop("H0/D1")
+        with pytest.raises(SystemExit):
+            vv.v7s_record_parts(bad)
+    u = {p: {v: {k: {} for k in vv.expected_keys(s7.F_MACHINE if p == "firefox_cells" else ("F_H1",), run7.LAYERS,
+                                                 s7.DETECTORS)} for v in vu.VARIANTS} for p in ("firefox_cells", "f_h1")}
+    vv.v7u_record_shape(u)
+    u["firefox_cells"]["h"].pop("F_M0/hook/D1")
+    with pytest.raises(SystemExit):
+        vv.v7u_record_shape(u)
+
+
+@pytest.mark.parametrize("which", ["v7s", "v7u"])
+def test_main_stops_on_a_record_of_another_sha256(tmp_path, monkeypatch, which):
+    import _common as cm
+
+    monkeypatch.setattr(cm, "same_as_head", lambda paths: None)
+    monkeypatch.setattr(vv, "code_check", lambda: None)
+    monkeypatch.setattr(vv, "OUT", tmp_path / "out" / "record.json")
+    other = tmp_path / "other.json"
+    other.write_text("{}")
+    sha = cm.sha256(other)
+    monkeypatch.setattr(vv, "V7S_RECORD", other)
+    monkeypatch.setattr(vv, "V7U_RECORD", other)
+    monkeypatch.setattr(vv, "V7S_RECORD_SHA256", sha if which == "v7u" else "0" * 64)
+    monkeypatch.setattr(vv, "V7U_RECORD_SHA256", sha if which == "v7s" else "0" * 64)
+    monkeypatch.setattr(vv, "base_check", lambda c: None)
+    monkeypatch.setattr(vv, "run", lambda *a: pytest.fail("run() reached with another record"))
+    with pytest.raises(SystemExit, match=f"{which}'s record"):
+        vv.main(["--v7-captures", str(tmp_path), "--v7s-captures", str(tmp_path)])
+
+
+def test_code_check_stops_on_a_changed_file(monkeypatch):
+    import _common as cm
+
+    real = cm.git
+    monkeypatch.setattr(vu, "code_check", lambda: None)                 # v7u's own check would stop first
+    monkeypatch.setattr(cm, "git", lambda *a: "0" * 40 if a[0] == "hash-object" else real(*a))
+    with pytest.raises(SystemExit, match="differs"):
+        vv.code_check()
+
+
+def test_code_check_runs_v7us_check(monkeypatch):
+    called = []
+    monkeypatch.setattr(vu, "code_check", lambda: called.append(1))
+    vv.code_check()
+    assert called == [1]
+
+
+def test_main_writes_the_record_once(tmp_path, monkeypatch):
+    import _common as cm
+
+    monkeypatch.setattr(cm, "same_as_head", lambda paths: None)
+    monkeypatch.setattr(vv, "code_check", lambda: None)
+    monkeypatch.setattr(s7, "code_check", lambda: None)
+    out = tmp_path / "out" / "record.json"
+    monkeypatch.setattr(vv, "OUT", out)
+    rec = {"valid": {"D1": np.bool_(True)}, "usable": True, "reproduction": {"all_as_deposited": True},
+           "in_cell": {"cells_not_as_observed_bc": {"t": np.int64(0), "h": 0}},
+           "margins": {"M0/D1": {"x": np.float64(np.nan), "n": np.int64(3)}}}
+    monkeypatch.setattr(vv, "run", lambda *a: json.loads(json.dumps(rec, default=str)) | rec)
+    if not (vv.V7S_RECORD.exists() and vv.V7U_RECORD.exists()):
+        pytest.skip("the records are not in this checkout")
+    vv.main(["--v7-captures", str(tmp_path), "--v7s-captures", str(tmp_path)])
+    got = json.loads(out.read_text(encoding="utf-8"))
+    assert got["margins"]["M0/D1"] == {"x": None, "n": 3} and got["usable"] is True
+    assert got["provenance"]["v7u_record_sha256"] == vv.V7U_RECORD_SHA256
+    assert not out.with_suffix(".tmp").exists()
+    with pytest.raises(SystemExit, match="refusing"):
+        vv.main(["--v7-captures", str(tmp_path), "--v7s-captures", str(tmp_path)])
+
+
+def test_run_passes_variant_h_restricted(monkeypatch):
+    calls = _run_stubs(monkeypatch)
+    seen = []
+    monkeypatch.setattr(vv, "judged_counts", lambda scores, valid, only_firefox_page=False: seen.append(
+        ("judged", only_firefox_page)) or {})
+    monkeypatch.setattr(vv, "in_cell_counts", lambda cells, kept, valid, only_firefox_page=False: seen.append(
+        ("in_cell", only_firefox_page)) or ({}, 0, []))
+    rec = vv.run(Path("."), Path("."), {}, {})
+    assert sorted(seen) == [("in_cell", False), ("in_cell", True), ("judged", False), ("judged", True)]
+    assert rec["usable"] is True
+    assert calls[-1] == "source_scores"
+
+
+@pytest.mark.parametrize("off_t, off_h", [(1, 0), (0, 1)])
+def test_usable_needs_the_in_cell_check(monkeypatch, off_t, off_h):
+    _run_stubs(monkeypatch)
+    monkeypatch.setattr(vv, "in_cell_counts", lambda cells, kept, valid, only_firefox_page=False:
+                        ({}, off_h if only_firefox_page else off_t, []))
+    assert vv.run(Path("."), Path("."), {}, {})["usable"] is False

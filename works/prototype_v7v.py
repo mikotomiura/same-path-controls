@@ -109,12 +109,27 @@ def in_cell_counts(cells: dict, kept: dict, valid: dict, only_firefox_page: bool
     return out, len(off), off[:FIRST]
 
 
+PERSON_SOURCES = {"H0", "M3a", "M3b"}   # H0 is persons; M3a and M3b are built from donors (persons of E, v7)
+SPLIT_MIN = 21                          # a person-derived side's quantiles only if both sides hold this many values
+MIN_VALUES = run7.MIN_SUMMARY           # below this many values only the count, for every source
+
+
+def margin_summary(num: list[float], person: bool) -> dict | None:
+    """v7's summary: persons' sources without ends; plans with ends. Below MIN_VALUES values the count only."""
+    if len(num) < MIN_VALUES:
+        return {"n": len(num)} if num else None
+    return run7.summary(num, ends=not person)
+
+
 def margin_table(margins: dict, base_scores: dict, valid: dict) -> dict:
     """Per source and valid detector: sessions, without a margin, 'none', and the numeric margin_sd's distribution
-    (plans with ends, H0 without), in all and by the unperturbed judgment."""
+    (plans with ends; H0, M3a and M3b without), in all and by the unperturbed judgment. For a person-derived source
+    the two sides' quantiles are written only if both sides hold at least SPLIT_MIN numeric values, else both sides
+    give counts only (a quantile of few persons, or the difference with the whole, would give one person's value).
+    The sessions whose judgment and margin disagree (a margin without a judgment or none with one) are counted."""
     out = {}
     for name, per_det in margins.items():
-        ends = name != "H0"
+        person = name in PERSON_SOURCES
         for d, ms in per_det.items():
             if not valid[d]:
                 continue
@@ -122,14 +137,20 @@ def margin_table(margins: dict, base_scores: dict, valid: dict) -> dict:
             if len(ms) != ok.size:
                 raise s7.RunStop(f"{name}/{d}: {len(ms)} margins for {ok.size} sessions")
 
-            def part(mask):
+            def nums(mask):
+                return [float(m) for m, keep in zip(ms, mask) if keep and m is not None and m != "none"]
+
+            def part(mask, dist: bool):
                 sel = [m for m, keep in zip(ms, mask) if keep]
-                num = [float(m) for m in sel if m is not None and m != "none"]
+                num = nums(mask)
                 return {"sessions": len(sel), "no_margin": sum(m is None for m in sel),
                         "none": sum(isinstance(m, str) and m == "none" for m in sel),
-                        "margin_sd_ms": run7.summary(num, ends=ends)}
-            row = part(np.ones(ok.size, dtype=bool))
-            row["by_judgment"] = {"machine": part(ok & jm), "human": part(ok & ~jm)}
+                        "margin_sd_ms": margin_summary(num, person) if dist else {"n": len(num)}}
+            sides = {"machine": ok & jm, "human": ok & ~jm}
+            split = not person or all(len(nums(m)) >= SPLIT_MIN for m in sides.values())
+            row = part(np.ones(ok.size, dtype=bool), True)
+            row["by_judgment"] = {k: part(m, split) for k, m in sides.items()}
+            row["judgment_not_as_margin"] = int(sum((m is None) != (not o) for m, o in zip(ms, ok)))
             out[f"{name}/{d}"] = row
     return out
 
@@ -184,6 +205,10 @@ def reproduction(res: dict, tables: dict, jitter: dict, v7s_rec: dict, v7u_rec: 
     return out
 
 
+def expected_keys(series, layers, detectors) -> set[str]:
+    return {f"{s_}/{la}/{d}" for s_ in series for la in layers for d in detectors}
+
+
 # ---------------------------------------------------------------- the run
 
 
@@ -205,10 +230,14 @@ def v7u_record_shape(v7u_rec: dict) -> None:
     """The parts of v7u's record this run compares with are there before anything is scored."""
     try:
         ok = all(isinstance(v7u_rec[p][v], dict) for p in ("firefox_cells", "f_h1") for v in vu.VARIANTS)
+        ok = ok and all(set(v7u_rec["firefox_cells"][v]) == expected_keys(s7.F_MACHINE, run7.LAYERS, s7.DETECTORS)
+                        and set(v7u_rec["f_h1"][v]) == expected_keys(("F_H1",), run7.LAYERS, s7.DETECTORS)
+                        for v in vu.VARIANTS)
     except (KeyError, TypeError):
         ok = False
     if not ok:
-        raise s7.RunStop("v7u's record does not hold firefox_cells and f_h1 for both variants")
+        raise s7.RunStop("v7u's record does not hold firefox_cells and f_h1 for both variants with the keys this run "
+                         "makes")
 
 
 def v7s_record_parts(v7s_rec: dict) -> None:
@@ -217,10 +246,17 @@ def v7s_record_parts(v7s_rec: dict) -> None:
         ok = all(isinstance(v7s_rec["criterion"][f"{t:g}"]["cells"], dict)
                  and isinstance(v7s_rec["criterion_human"][f"{t:g}"], dict) for t in (s7.THETA, *s7.THETA_SENS))
         ok = ok and isinstance(v7s_rec["perturbation_jitter"], dict) and v7s_rec["valid"] == VALID_IN_V7S
+        ok = ok and all(set(v7s_rec["criterion"][f"{t:g}"]["cells"]) == expected_keys(s7.MACHINE_SERIES_ALL,
+                                                                                      run7.LAYERS, s7.DETECTORS)
+                        and set(v7s_rec["criterion_human"][f"{t:g}"]) == expected_keys(s7.HUMAN_SERIES, run7.LAYERS,
+                                                                                       s7.DETECTORS)
+                        for t in (s7.THETA, *s7.THETA_SENS))
+        ok = ok and set(v7s_rec["perturbation_jitter"]) == {f"{m}/{d}" for m in MARGIN_SOURCES for d in s7.DETECTORS}
     except (KeyError, TypeError):
         ok = False
     if not ok:
-        raise s7.RunStop("v7s's record does not hold every theta's cells, the jitter table and v7s's validity")
+        raise s7.RunStop("v7s's record does not hold every theta's cells, the jitter table and v7s's validity "
+                         "with the keys this run makes")
 
 
 def source_scores(scorer, sources: dict) -> dict:
@@ -262,9 +298,11 @@ def run(v7_root: Path, v7s_root: Path, v7s_rec: dict, v7u_rec: dict) -> dict:
     in_t, off_t, first_t = in_cell_counts(res["t"]["crit"][th]["cells"], res["t"]["kept"], valid)
     in_h, off_h, first_h = in_cell_counts(res["h"]["crit"][th]["cells"], res["h"]["kept"], valid, True)
     base_scores = source_scores(scorer, sources)
+    rep = reproduction(res, loaded["t"]["tables"], s7.jitter_table(counts, sources), v7s_rec, v7u_rec)
     return {
         "valid": valid,
-        "reproduction": reproduction(res, loaded["t"]["tables"], s7.jitter_table(counts, sources), v7s_rec, v7u_rec),
+        "reproduction": rep,
+        "usable": bool(rep["all_as_deposited"] and off_t == 0 and off_h == 0),
         "judged": {"t": judged_counts(res["t"]["scores"], valid),
                    "h": judged_counts(res["h"]["scores"], valid, only_firefox_page=True)},
         "in_cell": {"t": in_t, "h": in_h,
@@ -307,7 +345,7 @@ def main(argv: list[str] | None = None) -> None:
         tmp.unlink()
         raise SystemExit(f"{OUT} appeared during the run; refusing to overwrite")
     tmp.rename(OUT)
-    print(json.dumps({"all_as_deposited": rec["reproduction"]["all_as_deposited"],
+    print(json.dumps({"usable": rec["usable"], "all_as_deposited": rec["reproduction"]["all_as_deposited"],
                       "cells_not_as_observed_bc": rec["in_cell"]["cells_not_as_observed_bc"]}, indent=1))
     print(f"written {OUT} (sha256 {hashlib.sha256(OUT.read_bytes()).hexdigest()})")
 
