@@ -76,9 +76,9 @@ def handler_loader(load_item):
 # ---------------------------------------------------------------- one variant of v7s's analysis
 
 
-def variant(name: str, v7caps: dict, v7s_root: Path, h0: list, scorer, valid: dict, margin_state: dict) -> dict:
-    """v7s's main from the known gaps to the criterion, for variant t or h. The margins depend only on the plans and
-    H0 (not on any recording) and are computed once (margin_state) and shared."""
+def load_variant(name: str, v7caps: dict, v7s_root: Path, h0: list) -> dict:
+    """v7s's main from the runlogs to the series (every check v7s makes on the recordings), for variant t or h.
+    Both variants are loaded before anything is scored, so a check that stops variant h stops in seconds."""
     real = s7.load_item
     if name == "h":
         s7.load_item = handler_loader(real)
@@ -90,17 +90,34 @@ def variant(name: str, v7caps: dict, v7s_root: Path, h0: list, scorer, valid: di
     finally:
         s7.load_item = real
     s7.check_one_firefox(meas.get("firefox_version_known_gaps"), kinds.get("firefox_version"))
+    return {"tables": tables, "series": series, "measures": meas}
+
+
+def same_bases(a: dict, b: dict) -> None:
+    """The margins are computed once, from variant t's series: they read only each series' unperturbed side (plans
+    or H0) and margins_of, which must therefore be the same in both variants."""
+    if set(a) != set(b):
+        raise s7.RunStop("the variants hold different series")
+    for name in a:
+        x, y = a[name], b[name]
+        if x.margins_of != y.margins_of or x.status != y.status or len(x.base) != len(y.base):
+            raise s7.RunStop(f"{name}: the variants differ outside the recordings")
+        for p, q in zip(x.base, y.base):
+            if (p is None) != (q is None) or (p is not None and (not np.array_equal(p.times, q.times)
+                                                                 or p.kinds != q.kinds)):
+                raise s7.RunStop(f"{name}: the variants' unperturbed sides differ")
+
+
+def score_variant(loaded: dict, h0: list, scorer, valid: dict, margins: dict, counts: dict) -> dict:
+    """v7s's main from the scores to the criterion, with the margins of variant t."""
+    series, tables = loaded["series"], loaded["tables"]
     scores = s7.score_series(scorer, series)
-    if not margin_state:
-        sources = s7.margin_sources(series, h0)
-        margin_state["margins"], margin_state["counts"] = s7.all_margins(scorer, sources)
-    margins, counts = margin_state["margins"], margin_state["counts"]
     crit = {f"{t:g}": s7.criterion_cells(series, scores, margins, counts, tables, valid, t)
             for t in (s7.THETA, *s7.THETA_SENS)}
     human = {f"{t:g}": s7.human_cells(series, scores, margins, counts, tables, t) for t in (s7.THETA, *s7.THETA_SENS)}
     judg = {f"{s_}/page/{d}": run7.judgments(d, scores[s_]["page"][d]) for s_ in (*F_TESTED, "F_H1")
             for d in s7.DETECTORS}
-    return {"tables": tables, "crit": crit, "human": human, "judgments": judg, "measures": meas}
+    return {"tables": tables, "crit": crit, "human": human, "judgments": judg}
 
 
 # ---------------------------------------------------------------- readings
@@ -108,7 +125,7 @@ def variant(name: str, v7caps: dict, v7s_root: Path, h0: list, scorer, valid: di
 
 def firefox_verdict(cr: dict, valid: dict) -> dict:
     """v7s's verdict rule over Firefox's tested cells (F_M0, F_M2_8B, F_M2_14B; both layers) of valid detectors."""
-    keys = [k for k, c in cr["cells"].items() if c["valid"] and k.split("/")[0] in F_TESTED]
+    keys = [k for k, c in cr["cells"].items() if c["valid"] and valid[k.split("/")[2]] and k.split("/")[0] in F_TESTED]
     return s7.verdict([cr["cells"][k] for k in keys], [p for k in keys for p in cr["sessions"][k]])
 
 
@@ -148,9 +165,26 @@ def agreement_with_v7s(cells_t: dict, v7s_cells: dict) -> dict:
     """Variant t against v7s's record (theta 1): cells whose observed and predicted b, c, n are not v7s's."""
     keys = sorted(set(cells_t) | set(v7s_cells))
     off = [k for k in keys if k not in cells_t or k not in v7s_cells
-           or cells_t[k]["observed_bc"] != v7s_cells[k]["observed_bc"]
-           or cells_t[k]["predicted_bc"] != v7s_cells[k]["predicted_bc"]]
+           or list(cells_t[k]["observed_bc"]) != list(v7s_cells[k]["observed_bc"])
+           or list(cells_t[k]["predicted_bc"]) != list(v7s_cells[k]["predicted_bc"])]
     return {"cells": len(keys), "cells_not_as_v7s": len(off), "first_not_as_v7s": off[:10]}
+
+
+def tables_as_v7s(tables: dict, v7s_tables: dict) -> int:
+    """Variant t's path_sd tables against v7s's record: the number of (table, gap) entries that differ."""
+    ours = {k: {f"{g:g}": float(v) for g, v in t.items()} for k, t in tables.items()}
+    keys = {(k, g) for k, t in ours.items() for g in t} | {(k, g) for k, t in v7s_tables.items() for g in t}
+    return sum(ours.get(k, {}).get(g) != v7s_tables.get(k, {}).get(g) for k, g in keys)
+
+
+def runlogs_as_v7s(v7s_root: Path, v7s_rec: dict) -> None:
+    """The captures are those v7s's record was made from: its runlogs' SHA-256 and their runs.json's."""
+    pv = v7s_rec["provenance"]
+    for f, sha in pv["v7s_runlogs_sha256"].items():
+        if cm.sha256(v7s_root / f) != sha:
+            raise s7.RunStop(f"{f} is not the runlog v7s's record was made from")
+    if run7.read_ndjson(v7s_root / "runlog.b1.ndjson")[0]["runs_sha256"] != pv["v7s_runs_sha256"]:
+        raise s7.RunStop("the runlogs name another runs.json than v7s's record")
 
 
 # ---------------------------------------------------------------- the run
@@ -159,7 +193,7 @@ def agreement_with_v7s(cells_t: dict, v7s_cells: dict) -> dict:
 def code_check() -> None:
     for commit, files in ((V7S_COMMIT, V7S_CODE), (V7T_COMMIT, V7T_CODE)):
         for f in files:
-            if cm.git("rev-parse", f"{commit}:{f}") != cm.git("hash-object", str(ROOT / f)):
+            if cm.git("rev-parse", f"{commit}:{f}") != cm.git("hash-object", "--no-filters", str(ROOT / f)):
                 raise SystemExit(f"{f} differs from {commit[:7]}")
 
 
@@ -191,7 +225,7 @@ def persons_and_scorer():
     e_train_ids = [ps.e[i] for i in ps.e_train]
     keyed = v7plan.read_kupa_keys(ROOT / files["essay"][0], set(ps.h) | set(e_train_ids))
 
-    def sess_of(pid: str):
+    def sess_of(pid: str) -> s7.Sess:
         t, k = keyed[pid]
         if not run7.same_times(t, essay[pid]["times"]):
             raise s7.RunStop("the keys' reading of KUPA does not give the persons' times")
@@ -206,15 +240,37 @@ def persons_and_scorer():
     return h0, scorer, valid, files
 
 
+def outside_firefox_page(res: dict) -> int:
+    """Cells (machine and human, theta 1) other than Firefox's page whose observed b, c, n differ between t and h."""
+    th = f"{s7.THETA:g}"
+    n = 0
+    for part in ("crit", "human"):
+        a = res["t"][part][th]["cells"] if part == "crit" else res["t"][part][th]
+        b = res["h"][part][th]["cells"] if part == "crit" else res["h"][part][th]
+        for k in a:
+            s_, la = k.split("/")[:2]
+            if (s_ in (*F_TESTED, "F_H1")) and la == "page":
+                continue
+            n += list(a[k]["observed_bc"]) != list(b[k]["observed_bc"])
+    return n
+
+
 def run(v7_root: Path, v7s_root: Path, v7s_rec: dict) -> dict:
+    runlogs_as_v7s(v7s_root, v7s_rec)
     h0, scorer, valid, files = persons_and_scorer()
     v7caps = run7.load_all(v7_root)
-    state: dict = {}
-    res = {v: variant(v, v7caps, v7s_root, h0, scorer, valid, state) for v in VARIANTS}
+    loaded = {v: load_variant(v, v7caps, v7s_root, h0) for v in VARIANTS}   # both loaded and checked first
+    same_bases(loaded["t"]["series"], loaded["h"]["series"])
+    margins, counts = s7.all_margins(scorer, s7.margin_sources(loaded["t"]["series"], h0))   # once, from t
+    res = {v: score_variant(loaded[v], h0, scorer, valid, margins, counts) for v in VARIANTS}
     th = f"{s7.THETA:g}"
     rec = {"valid": valid,
-           "agreement_t_with_v7s": agreement_with_v7s(res["t"]["crit"][th]["cells"],
-                                                      v7s_rec["criterion"][th]["cells"]),
+           "agreement_t_with_v7s": {**agreement_with_v7s(res["t"]["crit"][th]["cells"],
+                                                         v7s_rec["criterion"][th]["cells"]),
+                                    "human": agreement_with_v7s(res["t"]["human"][th],
+                                                                v7s_rec["criterion_human"][th]),
+                                    "path_sd_entries_not_as_v7s": tables_as_v7s(res["t"]["tables"],
+                                                                                v7s_rec["path"]["path_sd_tables"])},
            "firefox_page_path_sd": {v: {f"{g:g}": x for g, x in res[v]["tables"]["firefox/page"].items()}
                                     for v in VARIANTS},
            "firefox_verdict": {v: {t: firefox_verdict(res[v]["crit"][t], valid) for t in res[v]["crit"]}
@@ -229,10 +285,7 @@ def run(v7_root: Path, v7s_root: Path, v7s_rec: dict) -> dict:
                         for k, c in res[v]["human"][th].items() if k.startswith("F_H1/")} for v in VARIANTS},
            "time_choice": time_choice(res["t"]["crit"][th]["cells"], res["h"]["crit"][th]["cells"], valid),
            "sessions_differing_t_h": sessions_differing(res["t"]["judgments"], res["h"]["judgments"]),
-           "cells_changed_outside_firefox_page": int(sum(
-               res["t"]["crit"][th]["cells"][k]["observed_bc"] != res["h"]["crit"][th]["cells"][k]["observed_bc"]
-               for k in res["t"]["crit"][th]["cells"]
-               if k.split("/")[0] not in F_TESTED or k.split("/")[1] == "hook")),
+           "cells_changed_outside_firefox_page": outside_firefox_page(res),
            "data_sha256": {n: s_ for n, (_, s_) in files.items()}}
     return rec
 
