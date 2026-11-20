@@ -1,0 +1,70 @@
+cff-version: 1.2.0
+message: "If you use this archive or its series, please cite it and the article it accompanies."
+type: software
+title: "Same-path controls for keystroke detectors: conditions, code, records, series and history"
+abstract: >-
+  The conditions, code, records, released series and git history of an evaluation procedure for detectors that tell
+  human from machine typing by keystroke timing: two paired controls on the detector's path, a replay of human records
+  through the machine's path and each machine session's plan against its recording, on one Windows machine with a hook
+  and a browser page (Chrome and Firefox). Runs v7 to v7v; every computation ran a script on conditions committed
+  before its values. The released series hold the kinds and times of the planned and recorded key presses, without
+  keys, text or person identifiers. The code is under the MIT License; the documents and conditions under CC BY 4.0;
+  the records keep the terms of the keystroke data they count; the series made from KUPA-KEYS are under
+  CC BY-NC-SA 4.0 and the others under CC BY 4.0 (REUSE.toml, LICENSES/, LICENSE-docs).
+authors:
+  - family-names: Miura
+    given-names: Mikoto
+    affiliation: Independent Researcher
+    orcid: "https://orcid.org/0009-0000-4196-0508"
+  - family-names: Harada
+    given-names: Yuusuke
+    affiliation: "Graduate School of Humanities and Social Sciences, Hiroshima University, Japan"
+    orcid: "https://orcid.org/0009-0006-7252-5115"
+doi: 10.5281/zenodo.24403562
+repository-code: "https://github.com/mikotomiura/same-path-controls"
+version: 1.0.0
+date-released: "2026-11-21"
+license:
+  - MIT
+  - CC-BY-4.0
+  - CC-BY-NC-SA-4.0
+keywords:
+  - keystroke dynamics
+  - bot detection
+  - liveness detection
+  - language models
+  - measurement validity
+  - replay
+references:
+  - type: conference-paper
+    title: "Logging Keystrokes in Writing by English Learners"
+    authors:
+      - family-names: Velentzas
+        given-names: G.
+      - family-names: Caines
+        given-names: A.
+      - family-names: Borgo
+        given-names: R.
+      - name: "et al."
+    conference:
+      name: "LREC-COLING 2024"
+    start: 10725
+    end: 10746
+    url: "https://huggingface.co/datasets/ALTACambridge/KUPA-KEYS"
+    notes: "The KUPA-KEYS dataset. The series in series/*/kupa-derived/ are made from it and keep its licence, CC BY-NC-SA 4.0."
+  - type: data
+    title: "Conditions of the first round (deposited before its first capture)"
+    authors:
+      - family-names: Miura
+        given-names: Mikoto
+      - family-names: Harada
+        given-names: Yuusuke
+    doi: 10.5281/zenodo.23939806
+  - type: software
+    title: "KeepCount: conditions, code, records and history (earlier runs v1 to v6j of the same repository)"
+    authors:
+      - family-names: Miura
+        given-names: Mikoto
+      - family-names: Harada
+        given-names: Yuusuke
+    doi: 10.5281/zenodo.23858735

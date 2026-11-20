@@ -1,0 +1,27 @@
+Copyright (c) 2026 Mikoto Miura and Yuusuke Harada
+
+The licences of this repository are stated file by file in REUSE.toml (REUSE Specification 3.3),
+with the full texts in LICENSES/:
+
+- The source code, the capture tools and the files of the environment (src/, works/*.py, capture/,
+  tools/, tests/, pyproject.toml, uv.lock, .python-version and .gitignore) are under the MIT
+  License (LICENSE, LICENSES/MIT.txt).
+- The documents, conditions and texts (README.md, README.ja.md, CITATION.cff, commit-map.tsv,
+  docs/, works/conditions/, works/texts/, results/record-digests.json), the results of runs v1 to
+  v5, which are made from synthetic keystrokes only, and the lists of units, statuses and file
+  hashes of the series (series/*/status.csv and series/*/manifest.json) are under the Creative
+  Commons Attribution 4.0 International License (CC BY 4.0, LICENSES/CC-BY-4.0.txt).
+- The results of runs v6 to v6j and v7 to v7v (results/prototype_v6*/ and
+  results/prototype_v7*/) count keystroke data of others and keep the terms of their sources
+  (LICENSES/LicenseRef-source-data-terms.txt): counts and values derived from KUPA-KEYS are under
+  CC BY-NC-SA 4.0, those from 136M Keystrokes are for non-commercial use with attribution to its
+  authors, and those from the essays of the Kaggle competition Linking Writing Processes to
+  Writing Quality are under the competition's rules.
+- The released series (series/v7/ and series/v7s/) hold the kinds and times of the key presses
+  planned and recorded, without keys, text or person identifiers. The series made from KUPA-KEYS
+  (series/*/kupa-derived/) are under CC BY-NC-SA 4.0 (LICENSES/CC-BY-NC-SA-4.0.txt), with
+  attribution to KUPA-KEYS (Velentzas et al., LREC-COLING 2024,
+  https://huggingface.co/datasets/ALTACambridge/KUPA-KEYS); the other series
+  (series/*/not-kupa-derived/) are under CC BY 4.0.
+
+The keystroke data of others are not redistributed here.
