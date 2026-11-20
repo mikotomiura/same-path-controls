@@ -6,7 +6,7 @@
     python -m capture.session --live --out <dir>
   common: --load <model> --load-prompt-file <p.txt>   background inference load
           --no-hook                                   the browser page only (P_nohook, amendments B11 and B14)
-          --browser chrome|edge  --inject unicode|vk  --auto-focus
+          --browser chrome|edge|firefox  --inject unicode|vk  --auto-focus
           --no-mouse-guard                            do not hold the mouse while typing (held by default; held in
                                                       every production capture: the researcher, 2026-11-04)
 
@@ -216,7 +216,7 @@ def parse(argv=None) -> argparse.Namespace:
     ap.add_argument("--load")
     ap.add_argument("--load-prompt-file", type=Path)
     ap.add_argument("--no-hook", action="store_true")
-    ap.add_argument("--browser", default="chrome", choices=["chrome", "edge"])  # Chrome, decided by the researcher 2026-11-04
+    ap.add_argument("--browser", default="chrome", choices=["chrome", "edge", "firefox"])  # Chrome, decided by the researcher 2026-11-04; firefox for v7s
     ap.add_argument("--inject", default="unicode", choices=["unicode", "vk"])
     ap.add_argument("--auto-focus", action="store_true")  # the start used in production (researcher, 2026-11-04)
     ap.add_argument("--no-mouse-guard", action="store_true")
@@ -422,6 +422,8 @@ def main(argv=None) -> int:
         b = br.Browser(a.browser, page.base + "/", incognito=a.live)
         meta["browser"] = {"name": a.browser, "version": b.version, "exe": str(b.exe), "args": b.args()[1:],
                            "stale_profiles_deleted": stale["deleted"]}
+        if a.browser == "firefox":  # R19: which prefs the capture ran with (the profile is deleted afterwards)
+            meta["browser"]["user_js_sha256"] = br.user_js_sha256(b.profile)
         hwnd = b.start()
         opened = page.wait("open", 1, 30)["last"]["open"]
         # the GPU that draws the page (WebGL's unmasked renderer, as chrome://gpu shows it): the display is on the
