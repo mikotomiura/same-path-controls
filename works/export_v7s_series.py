@@ -39,6 +39,20 @@ V7S_COMMIT = "550849003164b74187cda8a36dd6311d46487bc2"
 V7U_COMMIT = "ba4bfc8a153c11d56e3c0f52ee291bf99f883268"
 V7T_COMMIT = "502f31e7cfc325debc0d23c520b725db18b6f422"
 V7U_CODE = ["works/prototype_v7u.py", "works/conditions/prototype_v7u.json"]
+# read on the way to H0 (draw_persons, v6's Series) or by the environment, outside v7u's and v7s's own checks: the
+# bytes v7s ran with (5508490)
+V7S_MORE = ["src/keystroke.py", "works/prototype_v4.py", "works/prototype_v5.py", "works/conditions/prototype_v7.json",
+            "works/conditions/prototype_v6.json", "pyproject.toml", "uv.lock"]
+# every module the run imports from the repo, and the file it must have been loaded from
+MODULES = {"_common": "works/_common.py", "export_v7_series": "works/export_v7_series.py",
+           "prototype_v4": "works/prototype_v4.py", "prototype_v5": "works/prototype_v5.py",
+           "prototype_v6": "works/prototype_v6.py", "prototype_v7": "works/prototype_v7.py",
+           "prototype_v7_plan": "works/prototype_v7_plan.py", "prototype_v7_run": "works/prototype_v7_run.py",
+           "prototype_v7s": "works/prototype_v7s.py", "prototype_v7s_plan": "works/prototype_v7s_plan.py",
+           "prototype_v7t": "works/prototype_v7t.py", "prototype_v7u": "works/prototype_v7u.py",
+           "keystroke": "src/keystroke.py", "capture.events": "capture/events.py"}
+INDEX = re.compile(r"[0-9]+")
+ZERO = ("0.000000", "-0.000000")
 V7S_RECORD = ROOT / "results" / "prototype_v7s" / "record.json"
 V7S_RECORD_SHA256 = "9ff1d37a64ef12f603fc41a144ee14e9d084457cb374640000c09603848c27ce"
 
@@ -210,26 +224,96 @@ def build(got: dict, runlog: dict[str, str], unit_status: dict[str, list[str]]) 
     return files
 
 
+FILES = frozenset({"status.csv", *(f"kupa-derived/{s_}.csv" for s_ in KUPA_DERIVED),
+                   *(f"not-kupa-derived/{s_}.csv" for s_ in NOT_KUPA_DERIVED)})
+
+
+def cell_ok(s_: str, r: list[str]) -> bool:
+    """One row of a series file: every cell an allowed value or form."""
+    return (len(r) == 7 and r[0] == s_ and bool(UNIT_RE[s_].fullmatch(r[1])) and r[2] in ("plan", "hook", "page")
+            and bool(INDEX.fullmatch(r[3])) and r[4] in run7.COUNTED_KINDS and bool(T_MS.fullmatch(r[5]))
+            and bool(T_MS.fullmatch(r[6]) if (s_ in FIREFOX and r[2] == "page") else r[6] == ""))
+
+
 def check_files(files: dict[str, bytes]) -> None:
     """Every cell of every file is one of the allowed values or forms (an allow-list, not a search for what must not
     be there): series names of the release, unit forms of v7s's items, layers, integers, kinds, times, and h_ms only
-    on a Firefox page row (and there always)."""
+    on a Firefox page row (and there always). Then the structure: exactly the release's files, each unit once in
+    status.csv, each layer's i = 0, 1, 2, ... with its first time (and h_ms) at 0 (times run from the layer's first
+    counted press: an absolute clock reading cannot pass), and the layers a unit has are those its status allows."""
+    if set(files) != FILES:
+        raise SystemExit(f"the files are not the release's: {sorted(set(files) ^ FILES)}")
+    st = list(csv.reader(io.StringIO(files["status.csv"].decode("utf-8"))))
+    if tuple(st[0]) != STATUS_COLUMNS or not all(
+            len(r) == 5 and r[0] in RELEASED and UNIT_RE[r[0]].fullmatch(r[1]) and r[2] in STATUSES
+            and r[3] in ("true", "false") and r[4] in ("yes", "no") for r in st[1:]):
+        raise SystemExit("status.csv: a cell outside the allowed values or forms")
+    status = {(r[0], r[1]): r for r in st[1:]}
+    if len(status) != len(st) - 1:
+        raise SystemExit("status.csv: a unit appears twice")
     for name, b in files.items():
-        rows = list(csv.reader(io.StringIO(b.decode("utf-8"))))
-        head, body = tuple(rows[0]), rows[1:]
         if name == "status.csv":
-            ok = head == STATUS_COLUMNS and all(
-                len(r) == 5 and r[0] in RELEASED and UNIT_RE[r[0]].fullmatch(r[1]) and r[2] in STATUSES
-                and r[3] in ("true", "false") and r[4] in ("yes", "no") for r in body)
-        else:
-            s_ = name.split("/")[-1].removesuffix(".csv")
-            want_dir = "kupa-derived" if s_ in KUPA_DERIVED else "not-kupa-derived"
-            ok = name == f"{want_dir}/{s_}.csv" and s_ in RELEASED and head == COLUMNS and all(
-                len(r) == 7 and r[0] == s_ and UNIT_RE[s_].fullmatch(r[1]) and r[2] in ("plan", "hook", "page")
-                and r[3].isdigit() and r[4] in run7.COUNTED_KINDS and T_MS.fullmatch(r[5])
-                and (T_MS.fullmatch(r[6]) if (s_ in FIREFOX and r[2] == "page") else r[6] == "") for r in body)
-        if not ok:
+            continue
+        s_ = name.split("/")[-1].removesuffix(".csv")
+        rows = list(csv.reader(io.StringIO(b.decode("utf-8"))))
+        if tuple(rows[0]) != COLUMNS or not all(cell_ok(s_, r) for r in rows[1:]):
             raise SystemExit(f"{name}: a cell outside the allowed values or forms")
+        layers: dict[tuple[str, str], list[list[str]]] = {}
+        for r in rows[1:]:
+            layers.setdefault((r[1], r[2]), []).append(r)
+        for (u, la), rs in layers.items():
+            if [int(r[3]) for r in rs] != list(range(len(rs))) or rs[0][5] not in ZERO \
+                    or (rs[0][6] != "" and rs[0][6] not in ZERO):
+                raise SystemExit(f"{name}: {u}/{la} is not i = 0, 1, ... from a first time of 0")
+            srow = status.get((s_, u))
+            if srow is None or (la == "plan" and srow[4] != "yes") or (la != "plan" and srow[2] != "captured"):
+                raise SystemExit(f"{name}: {u}/{la} is not what status.csv says of the unit")
+        for (s2, u), srow in status.items():
+            if s2 == s_ and (srow[4] == "yes") != ((u, "plan") in layers):
+                raise SystemExit(f"{name}: {u}'s plan rows disagree with status.csv")
+
+
+def check_counts(unit_status: dict[str, list[str]], got: dict, record: dict) -> None:
+    """Before writing, on the work PC: the units per status are v7s's record's counts (MC, F_M, F_H1), and each known
+    gap's capture is captured exactly where v7s's path measures hold measures (not {'status': ...})."""
+    for s_, us in unit_status.items():
+        want = record["counts"].get(s_)
+        have = {"sessions": len(us), **{x: us.count(x) for x in STATUSES}}
+        if want != have:
+            raise SystemExit(f"{s_}: {have} is not v7s's record's counts {want}")
+    meas = record["path"]["measures"]
+    for name, (cap, _) in got.items():
+        s_, u = name.split("/")
+        if s_ not in KNOWN:
+            continue
+        for la in (("page",) if s_ in NOHOOK else run7.LAYERS):
+            entry = meas.get(f"{s_}/{int(u[1:])}/{la}")
+            ok = entry is not None and (("status" not in entry) if cap.status == "captured"
+                                        else entry == {"status": cap.status})
+            if not ok:
+                raise SystemExit(f"{name}/{la}: {cap.status}, not as v7s's record's path measures")
+
+
+HEX64, HEX40 = re.compile(r"[0-9a-f]{64}"), re.compile(r"[0-9a-f]{40}")
+
+
+def check_manifest(m: dict) -> None:
+    """The manifest's keys and value forms (it holds hashes, counts and the run's time only)."""
+    pv = m["provenance"]
+    ok = set(m) == {"files", "provenance"} and set(m["files"]) == FILES and all(
+        set(e) == ({"sha256", "rows"} if n == "status.csv" else {"sha256", "rows", "presses"})
+        and HEX64.fullmatch(e["sha256"]) and isinstance(e["rows"], int)
+        and (n == "status.csv" or (set(e["presses"]) == {"plan", "hook", "page"}
+                                   and all(isinstance(v, int) for v in e["presses"].values())))
+        for n, e in m["files"].items())
+    ok = ok and set(pv) == {"run_at", "git_commit", "git_dirty", "conditions_sha256", "code_sha256", "v7s_record_sha256",
+                            "v7s_runlogs_sha256"} \
+        and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00", pv["run_at"]) \
+        and HEX40.fullmatch(pv["git_commit"]) and isinstance(pv["git_dirty"], bool) \
+        and all(HEX64.fullmatch(v) for v in (pv["conditions_sha256"], pv["v7s_record_sha256"],
+                                             *pv["code_sha256"].values(), *pv["v7s_runlogs_sha256"].values()))
+    if not ok:
+        raise SystemExit("manifest.json: a key or value outside the allowed forms")
 
 
 # ---------------------------------------------------------------- the run
@@ -249,13 +333,19 @@ def base_check(c: dict) -> None:
 
 
 def code_check() -> None:
-    """v7u's files are the bytes of ba4bfc8; v7u's own check pins v7s's code (5508490) and v7t's (502f31e); v7s's
-    pins v7's (a6fa5ca)."""
-    for f in V7U_CODE:
-        if cm.git("rev-parse", f"{V7U_COMMIT}:{f}") != cm.git("hash-object", "--no-filters", str(ROOT / f)):
-            raise SystemExit(f"{f} differs from {V7U_COMMIT[:7]}")
+    """v7u's files are the bytes of ba4bfc8 and the files read on the way to H0 those of 5508490; v7u's own check pins
+    v7s's code (5508490) and v7t's (502f31e); v7s's pins v7's (a6fa5ca). Every module was loaded from its checked
+    file (a same-named file earlier on sys.path would otherwise run unchecked)."""
+    for commit, files in ((V7U_COMMIT, V7U_CODE), (V7S_COMMIT, V7S_MORE)):
+        for f in files:
+            if cm.git("rev-parse", f"{commit}:{f}") != cm.git("hash-object", "--no-filters", str(ROOT / f)):
+                raise SystemExit(f"{f} differs from {commit[:7]}")
     vu.code_check()
     s7.code_check()
+    for mod, f in MODULES.items():
+        m = sys.modules.get(mod)
+        if m is None or Path(m.__file__).resolve() != (ROOT / f).resolve():
+            raise SystemExit(f"module {mod} was not loaded from {f}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -265,8 +355,8 @@ def main(argv: list[str] | None = None) -> None:
     a = ap.parse_args(argv)
     if OUT.exists():
         raise SystemExit(f"{OUT} exists; refusing to overwrite")
-    paths = ["works/conditions/export_v7s_series.json", "works/export_v7s_series.py", "works/export_v7_series.py",
-             *V7U_CODE, *vu.V7S_CODE, *vu.V7T_CODE]
+    paths = ["works/conditions/export_v7s_series.json", "works/export_v7s_series.py",
+             *dict.fromkeys([*MODULES.values(), *V7U_CODE, *vu.V7S_CODE, *vu.V7T_CODE, *V7S_MORE])]
     cm.same_as_head([ROOT / p for p in paths])
     state = cm.git_state(paths)
     raw = COND.read_bytes()
@@ -275,10 +365,12 @@ def main(argv: list[str] | None = None) -> None:
     s7.check_constants(json.loads(s7.COND.read_text(encoding="utf-8")))   # as v7s's main does
     if not V7S_RECORD.exists() or cm.sha256(V7S_RECORD) != V7S_RECORD_SHA256:
         raise SystemExit(f"{V7S_RECORD} is not v7s's record (its SHA-256)")
-    vu.runlogs_as_v7s(a.v7s_captures, json.loads(V7S_RECORD.read_text(encoding="utf-8")))
+    record = json.loads(V7S_RECORD.read_text(encoding="utf-8"))
+    vu.runlogs_as_v7s(a.v7s_captures, record)
     h0 = h0_of()
     got, runlog, unit_status = load(a.v7_captures, a.v7s_captures, h0)
     files = build(got, runlog, unit_status)
+    check_counts(unit_status, got, record)
     manifest = {"files": ex7.manifest_entries(files),
                 "provenance": {"run_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), **state,
                                "conditions_sha256": hashlib.sha256(raw).hexdigest(),
@@ -287,6 +379,7 @@ def main(argv: list[str] | None = None) -> None:
                                "v7s_runlogs_sha256": {f"runlog.b{b}.ndjson": cm.sha256(a.v7s_captures /
                                                                                      f"runlog.b{b}.ndjson")
                                                       for b in range(1, s7.N_BLOCKS + 1)}}}
+    check_manifest(manifest)
     ex7.write_all(OUT, files, manifest)
     for name, e in manifest["files"].items():
         print(f"{e['sha256']}  {name}  rows {e['rows']}")

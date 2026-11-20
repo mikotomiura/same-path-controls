@@ -30,11 +30,11 @@ def _cap(name, status="captured", n=4, kinds=None):
     cap = run7.Capture(s_, 0, status, plan=plan, redone=False)
     h = None
     if status == "captured":
-        cap.layers["page"] = run7.Layer(t + 0.5, list(kinds), 0, 0)
+        cap.layers["page"] = run7.Layer(t * 1.04, list(kinds), 0, 0)      # every layer from its first press: 0
         if s_ not in ex.NOHOOK:
-            cap.layers["hook"] = run7.Layer(t + 0.000001, list(kinds), 0, 0)
+            cap.layers["hook"] = run7.Layer(t + 0.000001 * (np.arange(n) > 0), list(kinds), 0, 0)
         if s_ in ex.FIREFOX:
-            h = t + 0.25
+            h = t * 1.02
     return cap, h
 
 
@@ -97,7 +97,8 @@ def test_files_hold_kinds_and_times_only_and_h_ms_on_firefox_page_only():
     assert [r[2] for r in h00] == ["plan"] * 4 + ["hook"] * 4 + ["page"] * 4
     assert [r[4] for r in h00[:4]] == ["alnum", "space", "backspace", "enter"]
     assert h00[1][5:] == ["12.345679", ""] and h00[5][5:] == ["12.345680", ""]
-    assert h00[9][5:] == ["12.845679", "12.595679"]                 # page: t_ms and h_ms
+    assert h00[9][5:] == ["12.839506", "12.592592"]                 # page: t_ms and h_ms
+    assert h00[8][5:] == ["0.000000", "0.000000"]
     for name in ("not-kupa-derived/K_chrome.csv", "not-kupa-derived/MC1.csv"):
         assert {r[6] for r in _read(files[name])[1:]} == {""}        # Chrome: no h_ms anywhere
     fk = _read(files["not-kupa-derived/F_K_nohook.csv"])[1:]
@@ -179,14 +180,22 @@ def test_the_allow_list_stops_any_other_cell():
                           ("not-kupa-derived/MC1.csv", "MC1,t00,page,0,alnum,1.000000,1.000000"),
                           ("not-kupa-derived/K_chrome.csv", "K_chrome,t00,page,0,alnum,1.000000,"),
                           ("status.csv", "M3a,t00,captured,false,yes"),
-                          ("status.csv", "F_H1,P0123,captured,false,yes")]:
+                          ("status.csv", "F_H1,P0123,captured,false,yes"),
+                          # one column at a time (code-reviewer M1): series, layer, index, status, redone, plan
+                          ("not-kupa-derived/MC2.csv", "MC1,t00,page,0,alnum,1.000000,"),
+                          ("kupa-derived/F_H1.csv", "F_H1,h00,keys,0,alnum,1.000000,"),
+                          ("kupa-derived/F_H1.csv", "F_H1,h00,page,x,alnum,1.000000,1.000000"),
+                          ("kupa-derived/F_H1.csv", "F_H1,h00,page,\u00b2,alnum,1.000000,1.000000"),
+                          ("status.csv", "F_H1,h09,odd,false,yes"),
+                          ("status.csv", "F_H1,h09,captured,yes,yes"),
+                          ("status.csv", "F_H1,h09,captured,false,maybe")]:
         bad = dict(files)
         bad[name] = files[name] + (bad_row + "\n").encode("utf-8")
         with pytest.raises(SystemExit, match="outside the allowed"):
             ex.check_files(bad)
     bad = dict(files)
     bad["not-kupa-derived/F_H1.csv"] = bad.pop("kupa-derived/F_H1.csv")   # a KUPA series under CC BY
-    with pytest.raises(SystemExit, match="outside the allowed"):
+    with pytest.raises(SystemExit, match="not the release's"):
         ex.check_files(bad)
     got, runlog, unit_status = _items()   # an item name outside v7s's forms: build itself runs the check
     got["K_chrome/P0123"], runlog["K_chrome/P0123"] = _cap("K_chrome/P0123"), "done"
@@ -294,11 +303,162 @@ def test_h0_of_is_v7us_copy_of_v7s_main_without_the_scorer():
     assert keyed in ours
     assert keyed.replace("set(ps.h)", "set(ps.h) | set(e_train_ids)") in theirs
     assert ours[-1] == "return [sess_of(p) for p in ps.h]" and "h0 = [sess_of(p) for p in ps.h]" in theirs
-    assert [x for x in ours if x not in (keyed, ours[-1])] == \
-        [x for x in theirs if x in ours and x not in (keyed, ours[-1])]
-    assert all(x in theirs for x in ours if x not in (keyed, ours[-1]))
+    # what is left out of v7u's copy, named (Codex: a subset check alone passes a deleted statement)
+    left_out = ("v7rec_path = ", "if cm.sha256(v7rec_path)", "v7rec = ", "e_train_ids = ", "etr = ", "scorer = ",
+                "gate = ", "valid = ", "return (h0, scorer", "h0 = ", "keyed = ")
+    kept = [x for x in theirs if not x.startswith(left_out)]
+    assert [x for x in ours if x not in (keyed, ours[-1])] == kept
+    assert len([x for x in theirs if x.startswith(left_out)]) == len(left_out)
 
 
 def test_main_refuses_without_arguments():
     with pytest.raises(SystemExit):
         ex.main([])
+
+
+def _with(files, name, edit):
+    bad = dict(files)
+    bad[name] = edit(files[name].decode("utf-8")).encode("utf-8")
+    return bad
+
+
+def test_the_structure_stops_absolute_times_gaps_and_layers_status_does_not_allow():
+    """code-reviewer M2 and Codex 1: a layer's first time (or h_ms) not 0 (an absolute clock reading), i not 0, 1, 2,
+    ..., hook or page rows of a failed unit, plan rows of a unit whose plan is 'no', a missing file, a unit twice in
+    status.csv, a unit of a series file missing from status.csv."""
+    files = ex.build(*_items())
+    first = "F_H1,h00,page,0,alnum,0.000000,0.000000"
+    cases = [("kupa-derived/F_H1.csv", lambda t: t.replace(first, "F_H1,h00,page,0,alnum,93512.250000,0.000000"),
+              "first time of 0"),
+             ("kupa-derived/F_H1.csv", lambda t: t.replace(first, "F_H1,h00,page,0,alnum,0.000000,5012.125000"),
+              "first time of 0"),
+             ("kupa-derived/F_H1.csv", lambda t: t.replace("F_H1,h00,page,1,", "F_H1,h00,page,2,"), "i = 0, 1"),
+             ("not-kupa-derived/F_M2_8B.csv", lambda t: t + "F_M2_8B,t01,page,0,alnum,0.000000,0.000000\n",
+              "not what status.csv says"),
+             ("status.csv", lambda t: t.replace("F_M0,t00,captured,true,yes", "F_M0,t00,captured,true,no"),
+              "not what status.csv says"),
+             ("status.csv", lambda t: t.replace("MC3,t02,no_plan,false,no", "MC3,t02,no_plan,false,yes"),
+              "plan rows disagree"),
+             ("status.csv", lambda t: t + "MC1,t00,captured,false,yes\n", "twice"),
+             ("status.csv", lambda t: t.replace("MC1,t01,captured,false,yes\n", ""), "not what status.csv says")]
+    for name, edit, msg in cases:
+        with pytest.raises(SystemExit, match=msg):
+            ex.check_files(_with(files, name, edit))
+    bad = dict(files)
+    del bad["not-kupa-derived/MC5.csv"]
+    with pytest.raises(SystemExit, match="not the release's"):
+        ex.check_files(bad)
+    ok = _with(files, "kupa-derived/F_H1.csv", lambda t: t.replace(first, "F_H1,h00,page,0,alnum,-0.000000,0.000000"))
+    ex.check_files(ok)
+
+
+def _record(unit_status, got):
+    counts = {s_: {"sessions": len(us), **{x: us.count(x) for x in ex.STATUSES}} for s_, us in unit_status.items()}
+    meas = {}
+    for name, (cap, _) in got.items():
+        s_, u = name.split("/")
+        if s_ in ex.KNOWN:
+            for la in (("page",) if s_ in ex.NOHOOK else run7.LAYERS):
+                meas[f"{s_}/{int(u[1:])}/{la}"] = {"median_ms": 1.0} if cap.status == "captured" else \
+                    {"status": cap.status}
+    return {"counts": {**counts, "M0": {"sessions": 30}}, "path": {"measures": meas}}
+
+
+def test_counts_are_v7s_records_before_writing():
+    got, runlog, unit_status = _items()
+    rec = _record(unit_status, got)
+    ex.check_counts(unit_status, got, rec)
+    bad = json.loads(json.dumps(rec))
+    bad["counts"]["F_M2_8B"]["failed"] = 0
+    with pytest.raises(SystemExit, match="F_M2_8B"):
+        ex.check_counts(unit_status, got, bad)
+    bad = json.loads(json.dumps(rec))
+    del bad["counts"]["MC5"]
+    with pytest.raises(SystemExit, match="MC5"):
+        ex.check_counts(unit_status, got, bad)
+    bad = json.loads(json.dumps(rec))
+    bad["path"]["measures"]["F_K/5/hook"] = {"status": "failed"}
+    with pytest.raises(SystemExit, match="F_K/c005/hook"):
+        ex.check_counts(unit_status, got, bad)
+    bad = json.loads(json.dumps(rec))
+    del bad["path"]["measures"]["K_chrome_nohook/0/page"]
+    with pytest.raises(SystemExit, match="K_chrome_nohook/c000/page"):
+        ex.check_counts(unit_status, got, bad)
+
+
+def _manifest(files):
+    return {"files": ex.ex7.manifest_entries(files),
+            "provenance": {"run_at": "2026-11-21T01:02:03+00:00", "git_commit": "a" * 40, "git_dirty": False,
+                           "conditions_sha256": "b" * 64, "code_sha256": {"works/x.py": "c" * 64},
+                           "v7s_record_sha256": ex.V7S_RECORD_SHA256,
+                           "v7s_runlogs_sha256": {"runlog.b1.ndjson": "d" * 64}}}
+
+
+def test_the_manifest_holds_hashes_counts_and_the_time_only():
+    files = ex.build(*_items())
+    m = _manifest(files)
+    ex.check_manifest(m)
+    for edit in (lambda m: m["provenance"].__setitem__("user", "someone"),
+                 lambda m: m["provenance"].__setitem__("run_at", "C:\\Users\\someone"),
+                 lambda m: m["files"]["status.csv"].__setitem__("sha256", "x" * 64),
+                 lambda m: m["files"].pop("kupa-derived/F_H1.csv"),
+                 lambda m: m["provenance"]["code_sha256"].__setitem__("works/x.py", "KeyA")):
+        bad = json.loads(json.dumps(m))
+        edit(bad)
+        with pytest.raises(SystemExit, match="manifest.json"):
+            ex.check_manifest(bad)
+
+
+def test_code_check_passes_on_head_and_stops_on_other_bytes_or_modules(monkeypatch):
+    """code-reviewer M4 and M5: v7u's files at ba4bfc8, the files on the way to H0 at 5508490, v7u's and v7s's own
+    checks, and every module loaded from its checked file."""
+    ex.code_check()
+    monkeypatch.setattr(ex, "V7U_COMMIT", "ea634630a29983c41ff905fda738f72abde183e6")   # v7u before its amendments
+    with pytest.raises(SystemExit, match="differs from ea63463"):
+        ex.code_check()
+    monkeypatch.undo()
+    monkeypatch.setattr(ex, "V7S_COMMIT", "a6fa5cae45579c2b4cc95ccb938eab6ea622310e")   # pyproject before LightGBM
+    with pytest.raises(SystemExit, match="pyproject.toml differs from a6fa5ca"):
+        ex.code_check()
+    monkeypatch.undo()
+    monkeypatch.setattr(vu, "V7S_COMMIT", "668abfdbbf616bb5cc56c028eb7d764ffc1099b5")   # v7s before read_series' fix
+    with pytest.raises(SystemExit, match="differs from 668abfd"):
+        ex.code_check()
+    monkeypatch.undo()
+    monkeypatch.setattr(s7, "V7_COMMIT", "fc79abca1ccd0363f5dcc27ebf9966583e803d77")    # v7's run before a6fa5ca
+    with pytest.raises(SystemExit, match="differs from fc79abc"):
+        ex.code_check()
+    monkeypatch.undo()
+    monkeypatch.setitem(ex.MODULES, "prototype_v7s", "works/prototype_v7.py")
+    with pytest.raises(SystemExit, match="module prototype_v7s"):
+        ex.code_check()
+
+
+def test_main_stops_before_writing_when_a_check_stops(tmp_path, monkeypatch):
+    out = tmp_path / "export_v7s_series"
+    monkeypatch.setattr(ex, "OUT", out)
+    monkeypatch.setattr(ex, "V7U_COMMIT", "ea634630a29983c41ff905fda738f72abde183e6")
+    with pytest.raises(SystemExit, match="differs from"):
+        ex.main(["--v7-captures", str(tmp_path / "v7"), "--v7s-captures", str(tmp_path / "v7s")])
+    assert not out.exists() and not (tmp_path / "export_v7s_series.tmp").exists()
+    monkeypatch.undo()
+    monkeypatch.setattr(ex, "OUT", out)
+    monkeypatch.setattr(ex, "load", lambda *a: (_ for _ in ()).throw(SystemExit("a check of v7s's loading")))
+    monkeypatch.setattr(ex, "h0_of", lambda: [])
+    monkeypatch.setattr(vu, "runlogs_as_v7s", lambda root, rec: None)
+    with pytest.raises(SystemExit, match="v7s's loading"):   # every check up to v7s's loading passes on HEAD
+        ex.main(["--v7-captures", str(tmp_path / "v7"), "--v7s-captures", str(tmp_path / "v7s")])
+    assert not out.exists()
+
+
+def test_load_stops_when_an_item_outside_the_runlogs_is_read(tmp_path, monkeypatch):
+    """code-reviewer L3: the items read are exactly the runlogs'."""
+    monkeypatch.setattr(run7, "load_all", lambda root: {})
+    monkeypatch.setattr(s7, "read_runlogs", lambda root: {"F_K/c000": "done"})
+    monkeypatch.setattr(s7, "known_tables", lambda v7caps, root, runlog: (
+        s7.load_item(root, {"F_K/c000": "no_plan", "F_K/c001": "no_plan"}, "F_K/c000") and
+        s7.load_item(root, {"F_K/c001": "no_plan"}, "F_K/c001") and ({}, {})))
+    monkeypatch.setattr(s7, "read_series", lambda *a: {})
+    monkeypatch.setattr(s7, "check_one_firefox", lambda *a: None)
+    with pytest.raises(SystemExit, match="1 items outside the runlogs"):
+        ex.load(tmp_path, tmp_path, [])
