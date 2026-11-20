@@ -548,5 +548,6 @@ def test_a_module_of_the_repo_outside_the_checked_list_stops(monkeypatch):
     m = types.ModuleType("numpy_shadow")
     m.__file__ = str(ex.ROOT / "works" / "numpy_shadow.py")
     monkeypatch.setitem(sys.modules, "numpy_shadow", m)
-    with pytest.raises(SystemExit, match="module numpy_shadow was loaded from works/numpy_shadow.py"):
+    # the message prints the path with the OS's separator (works\numpy_shadow.py on Windows, the work PC 2026-11-20)
+    with pytest.raises(SystemExit, match=r"module numpy_shadow was loaded from works[/\\]numpy_shadow\.py"):
         ex.code_check()
