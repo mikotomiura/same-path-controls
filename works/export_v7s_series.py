@@ -6,7 +6,9 @@ the kinds and times of the planned presses and of those recorded on the hook and
 handler's time (h_ms) as v7u's page_at_handler gives it (ba4bfc8). Keys, text and identifiers are never written.
 
 Usage (work PC):
-    python works/export_v7s_series.py --v7-captures C:\\work\\v7-captures --v7s-captures C:\\work\\v7s-captures
+    uv run --offline --frozen python works/export_v7s_series.py --v7-captures C:\\work\\v7-captures --v7s-captures C:\\work\\v7s-captures
+After the return (Mac):
+    uv run --offline --frozen python works/export_v7s_series.py --verify <the returned export_v7s_series folder>
 """
 from __future__ import annotations
 
@@ -50,7 +52,7 @@ MODULES = {"_common": "works/_common.py", "export_v7_series": "works/export_v7_s
            "prototype_v7_plan": "works/prototype_v7_plan.py", "prototype_v7_run": "works/prototype_v7_run.py",
            "prototype_v7s": "works/prototype_v7s.py", "prototype_v7s_plan": "works/prototype_v7s_plan.py",
            "prototype_v7t": "works/prototype_v7t.py", "prototype_v7u": "works/prototype_v7u.py",
-           "keystroke": "src/keystroke.py", "capture.events": "capture/events.py"}
+           "keystroke": "src/keystroke.py", "capture": "capture/__init__.py", "capture.events": "capture/events.py"}
 INDEX = re.compile(r"[0-9]+")
 ZERO = ("0.000000", "-0.000000")
 V7S_RECORD = ROOT / "results" / "prototype_v7s" / "record.json"
@@ -269,36 +271,57 @@ def check_files(files: dict[str, bytes]) -> None:
             if srow is None or (la == "plan" and srow[4] != "yes") or (la != "plan" and srow[2] != "captured"):
                 raise SystemExit(f"{name}: {u}/{la} is not what status.csv says of the unit")
         for (s2, u), srow in status.items():
-            if s2 == s_ and (srow[4] == "yes") != ((u, "plan") in layers):
+            if s2 != s_:
+                continue
+            if (srow[4] == "yes") != ((u, "plan") in layers):
                 raise SystemExit(f"{name}: {u}'s plan rows disagree with status.csv")
+            if srow[2] == "captured" and srow[4] == "yes":   # a captured plan was recorded on every layer it has
+                need = {"page"} if s_ in NOHOOK else {"hook", "page"}
+                if {la for (u2, la) in layers if u2 == u and la != "plan"} != need:
+                    raise SystemExit(f"{name}: {u} is captured but its layers are not {sorted(need)}")
 
 
-def check_counts(unit_status: dict[str, list[str]], got: dict, record: dict) -> None:
-    """Before writing, on the work PC: the units per status are v7s's record's counts (MC, F_M, F_H1), and each known
-    gap's capture is captured exactly where v7s's path measures hold measures (not {'status': ...})."""
-    for s_, us in unit_status.items():
-        want = record["counts"].get(s_)
-        have = {"sessions": len(us), **{x: us.count(x) for x in STATUSES}}
-        if want != have:
-            raise SystemExit(f"{s_}: {have} is not v7s's record's counts {want}")
+def check_counts(status_csv: bytes, record: dict) -> None:
+    """From status.csv, so that the work PC (before writing) and the Mac (after the return) check the same: for MC,
+    F_M and F_H1 the units per status are v7s's record's counts; for each known gap (not in the record's counts) the
+    units are those of v7s's path measures, captured exactly where the measures hold values (not {'status': ...})."""
+    rows = list(csv.reader(io.StringIO(status_csv.decode("utf-8"))))[1:]
     meas = record["path"]["measures"]
-    for name, (cap, _) in got.items():
-        s_, u = name.split("/")
+    for s_ in RELEASED:
+        mine = [r for r in rows if r[0] == s_]
         if s_ not in KNOWN:
+            want = record["counts"].get(s_)
+            have = {"sessions": len(mine), **{x: sum(r[2] == x for r in mine) for x in STATUSES}}
+            if want != have:
+                raise SystemExit(f"{s_}: {have} is not v7s's record's counts {want}")
             continue
-        for la in (("page",) if s_ in NOHOOK else run7.LAYERS):
-            entry = meas.get(f"{s_}/{int(u[1:])}/{la}")
-            ok = entry is not None and (("status" not in entry) if cap.status == "captured"
-                                        else entry == {"status": cap.status})
-            if not ok:
-                raise SystemExit(f"{name}/{la}: {cap.status}, not as v7s's record's path measures")
+        layers = ("page",) if s_ in NOHOOK else run7.LAYERS
+        gaps = {k.split("/")[1] for k in meas if k.split("/")[0] == s_}
+        if {str(int(r[1][1:])) for r in mine} != gaps or len(mine) != len(gaps):
+            raise SystemExit(f"{s_}: the known gaps are not those of v7s's record's path measures")
+        for r in mine:
+            for la in layers:
+                entry = meas.get(f"{s_}/{int(r[1][1:])}/{la}")
+                ok = entry is not None and (("status" not in entry) if r[2] == "captured"
+                                            else entry == {"status": r[2]})
+                if not ok:
+                    raise SystemExit(f"{s_}/{r[1]}/{la}: {r[2]}, not as v7s's record's path measures")
 
 
 HEX64, HEX40 = re.compile(r"[0-9a-f]{64}"), re.compile(r"[0-9a-f]{40}")
 
 
+RUNLOGS = frozenset(f"runlog.b{b}.ndjson" for b in range(1, s7.N_BLOCKS + 1))
+
+
+def code_paths() -> list[str]:
+    """Every file the run checks against HEAD (the conditions first, then the code)."""
+    return ["works/conditions/export_v7s_series.json", "works/export_v7s_series.py",
+            *dict.fromkeys([*MODULES.values(), *V7U_CODE, *vu.V7S_CODE, *vu.V7T_CODE, *V7S_MORE])]
+
+
 def check_manifest(m: dict) -> None:
-    """The manifest's keys and value forms (it holds hashes, counts and the run's time only)."""
+    """The manifest's keys and value forms, nested keys included (it holds hashes, counts and the run's time only)."""
     pv = m["provenance"]
     ok = set(m) == {"files", "provenance"} and set(m["files"]) == FILES and all(
         set(e) == ({"sha256", "rows"} if n == "status.csv" else {"sha256", "rows", "presses"})
@@ -310,6 +333,7 @@ def check_manifest(m: dict) -> None:
                             "v7s_runlogs_sha256"} \
         and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00", pv["run_at"]) \
         and HEX40.fullmatch(pv["git_commit"]) and isinstance(pv["git_dirty"], bool) \
+        and set(pv["code_sha256"]) == set(code_paths()[1:]) and set(pv["v7s_runlogs_sha256"]) == RUNLOGS \
         and all(HEX64.fullmatch(v) for v in (pv["conditions_sha256"], pv["v7s_record_sha256"],
                                              *pv["code_sha256"].values(), *pv["v7s_runlogs_sha256"].values()))
     if not ok:
@@ -346,31 +370,69 @@ def code_check() -> None:
         m = sys.modules.get(mod)
         if m is None or Path(m.__file__).resolve() != (ROOT / f).resolve():
             raise SystemExit(f"module {mod} was not loaded from {f}")
+    root, tests, me = ROOT.resolve(), (ROOT / "tests").resolve(), Path(__file__).resolve()
+    for name, m in list(sys.modules.items()):   # nothing else of the repo runs (e.g. an untracked works/numpy.py)
+        f = getattr(m, "__file__", None)
+        if not f:
+            continue
+        pf = Path(f).resolve()
+        if pf.is_relative_to(root) and not pf.is_relative_to(tests) and pf != me and name not in MODULES \
+                and not pf.is_relative_to(root / ".venv"):
+            raise SystemExit(f"module {name} was loaded from {pf.relative_to(root)}, which the run does not check")
+
+
+def read_record() -> dict:
+    if not V7S_RECORD.exists() or cm.sha256(V7S_RECORD) != V7S_RECORD_SHA256:
+        raise SystemExit(f"{V7S_RECORD} is not v7s's record (its SHA-256)")
+    return json.loads(V7S_RECORD.read_text(encoding="utf-8"))
+
+
+def verify(out: Path, record: dict) -> dict:
+    """After the return (the Mac): the files as written are exactly the release's, their SHA-256, rows and presses are
+    the manifest's, the manifest's forms, the allow-list and structure, and the counts (the checks of the work PC,
+    from the files alone). Returns the manifest."""
+    m = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    on_disk = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
+    if on_disk != FILES | {"manifest.json"}:
+        raise SystemExit(f"{out}: the files are not the release's: {sorted(on_disk ^ (FILES | {'manifest.json'}))}")
+    files = {n: (out / n).read_bytes() for n in FILES}
+    check_manifest(m)
+    if ex7.manifest_entries(files) != m["files"]:
+        raise SystemExit(f"{out}: the files' SHA-256, rows or presses are not the manifest's")
+    check_files(files)
+    check_counts(files["status.csv"], record)
+    return m
 
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--v7-captures", required=True, type=Path)
-    ap.add_argument("--v7s-captures", required=True, type=Path)
+    ap.add_argument("--v7-captures", type=Path)
+    ap.add_argument("--v7s-captures", type=Path)
+    ap.add_argument("--verify", type=Path, help="a returned results/export_v7s_series folder (the Mac)")
     a = ap.parse_args(argv)
+    if a.verify is not None:
+        if a.v7_captures is not None or a.v7s_captures is not None:
+            raise SystemExit("--verify takes no captures")
+        verify(a.verify, read_record())
+        print(f"verified {a.verify}")
+        return
+    if a.v7_captures is None or a.v7s_captures is None:
+        raise SystemExit("usage: --v7-captures <folder> --v7s-captures <folder>, or --verify <returned folder>")
     if OUT.exists():
         raise SystemExit(f"{OUT} exists; refusing to overwrite")
-    paths = ["works/conditions/export_v7s_series.json", "works/export_v7s_series.py",
-             *dict.fromkeys([*MODULES.values(), *V7U_CODE, *vu.V7S_CODE, *vu.V7T_CODE, *V7S_MORE])]
+    paths = code_paths()
     cm.same_as_head([ROOT / p for p in paths])
     state = cm.git_state(paths)
     raw = COND.read_bytes()
     base_check(json.loads(raw))
     code_check()
     s7.check_constants(json.loads(s7.COND.read_text(encoding="utf-8")))   # as v7s's main does
-    if not V7S_RECORD.exists() or cm.sha256(V7S_RECORD) != V7S_RECORD_SHA256:
-        raise SystemExit(f"{V7S_RECORD} is not v7s's record (its SHA-256)")
-    record = json.loads(V7S_RECORD.read_text(encoding="utf-8"))
+    record = read_record()
     vu.runlogs_as_v7s(a.v7s_captures, record)
     h0 = h0_of()
     got, runlog, unit_status = load(a.v7_captures, a.v7s_captures, h0)
     files = build(got, runlog, unit_status)
-    check_counts(unit_status, got, record)
+    check_counts(files["status.csv"], record)
     manifest = {"files": ex7.manifest_entries(files),
                 "provenance": {"run_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), **state,
                                "conditions_sha256": hashlib.sha256(raw).hexdigest(),

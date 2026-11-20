@@ -352,46 +352,52 @@ def test_the_structure_stops_absolute_times_gaps_and_layers_status_does_not_allo
     ex.check_files(ok)
 
 
-def _record(unit_status, got):
-    counts = {s_: {"sessions": len(us), **{x: us.count(x) for x in ex.STATUSES}} for s_, us in unit_status.items()}
+def _record(files):
+    """A record as v7s writes its counts and path measures, built from the test's status.csv; the measures' keys are
+    written as v7s's known_tables makes them (f"{series}/{ms}/{layer}", ms an int)."""
+    rows = list(csv.reader(io.StringIO(files["status.csv"].decode("utf-8"))))[1:]
+    counts = {}
+    for s_ in ex.RELEASED:
+        if s_ not in ex.KNOWN:
+            mine = [r[2] for r in rows if r[0] == s_]
+            counts[s_] = {"sessions": len(mine), **{x: mine.count(x) for x in ex.STATUSES}}
     meas = {}
-    for name, (cap, _) in got.items():
-        s_, u = name.split("/")
-        if s_ in ex.KNOWN:
-            for la in (("page",) if s_ in ex.NOHOOK else run7.LAYERS):
-                meas[f"{s_}/{int(u[1:])}/{la}"] = {"median_ms": 1.0} if cap.status == "captured" else \
-                    {"status": cap.status}
-    return {"counts": {**counts, "M0": {"sessions": 30}}, "path": {"measures": meas}}
+    for r in rows:
+        if r[0] in ex.KNOWN:
+            for la in (("page",) if r[0] in ex.NOHOOK else ("hook", "page")):
+                meas[f"{r[0]}/{int(r[1][1:])}/{la}"] = {"median_ms": 1.0} if r[2] == "captured" else {"status": r[2]}
+    return {"counts": {**counts, "M0": {"sessions": 30}}, "path": {"measures": {**meas, "v7_P_idle/18/page": {}}}}
 
 
-def test_counts_are_v7s_records_before_writing():
-    got, runlog, unit_status = _items()
-    rec = _record(unit_status, got)
-    ex.check_counts(unit_status, got, rec)
-    bad = json.loads(json.dumps(rec))
-    bad["counts"]["F_M2_8B"]["failed"] = 0
-    with pytest.raises(SystemExit, match="F_M2_8B"):
-        ex.check_counts(unit_status, got, bad)
-    bad = json.loads(json.dumps(rec))
-    del bad["counts"]["MC5"]
-    with pytest.raises(SystemExit, match="MC5"):
-        ex.check_counts(unit_status, got, bad)
-    bad = json.loads(json.dumps(rec))
-    bad["path"]["measures"]["F_K/5/hook"] = {"status": "failed"}
-    with pytest.raises(SystemExit, match="F_K/c005/hook"):
-        ex.check_counts(unit_status, got, bad)
-    bad = json.loads(json.dumps(rec))
-    del bad["path"]["measures"]["K_chrome_nohook/0/page"]
-    with pytest.raises(SystemExit, match="K_chrome_nohook/c000/page"):
-        ex.check_counts(unit_status, got, bad)
+def test_counts_are_v7s_records_from_status_csv():
+    files = ex.build(*_items())
+    rec = _record(files)
+    assert {"K_chrome/0/hook", "F_K/5/page", "F_K_nohook/0/page"} <= set(rec["path"]["measures"])   # literal keys
+    ex.check_counts(files["status.csv"], rec)
+    st = files["status.csv"]
+    for edit, msg in [(lambda r: r["counts"]["F_M2_8B"].__setitem__("failed", 0), "F_M2_8B"),
+                      (lambda r: r["counts"].pop("MC5"), "MC5"),
+                      (lambda r: r["path"]["measures"].__setitem__("F_K/5/hook", {"status": "failed"}), "F_K/c005/hook"),
+                      (lambda r: r["path"]["measures"].pop("K_chrome_nohook/0/page"), "K_chrome_nohook"),
+                      (lambda r: r["path"]["measures"].__setitem__("F_K/18/page", {}), "F_K: the known gaps")]:
+        bad = json.loads(json.dumps(rec))
+        edit(bad)
+        with pytest.raises(SystemExit, match=msg):
+            ex.check_counts(st, bad)
+    # the input's side missing (Codex): a series or a known gap absent from status.csv
+    for drop in ("MC2,", "K_chrome,c005,"):
+        lines = st.decode("utf-8").splitlines(keepends=True)
+        short = "".join(x for x in lines if not x.startswith(drop)).encode("utf-8")
+        with pytest.raises(SystemExit):
+            ex.check_counts(short, rec)
 
 
 def _manifest(files):
     return {"files": ex.ex7.manifest_entries(files),
             "provenance": {"run_at": "2026-11-21T01:02:03+00:00", "git_commit": "a" * 40, "git_dirty": False,
-                           "conditions_sha256": "b" * 64, "code_sha256": {"works/x.py": "c" * 64},
+                           "conditions_sha256": "b" * 64, "code_sha256": {p: "c" * 64 for p in ex.code_paths()[1:]},
                            "v7s_record_sha256": ex.V7S_RECORD_SHA256,
-                           "v7s_runlogs_sha256": {"runlog.b1.ndjson": "d" * 64}}}
+                           "v7s_runlogs_sha256": {n: "d" * 64 for n in ex.RUNLOGS}}}
 
 
 def test_the_manifest_holds_hashes_counts_and_the_time_only():
@@ -402,7 +408,10 @@ def test_the_manifest_holds_hashes_counts_and_the_time_only():
                  lambda m: m["provenance"].__setitem__("run_at", "C:\\Users\\someone"),
                  lambda m: m["files"]["status.csv"].__setitem__("sha256", "x" * 64),
                  lambda m: m["files"].pop("kupa-derived/F_H1.csv"),
-                 lambda m: m["provenance"]["code_sha256"].__setitem__("works/x.py", "KeyA")):
+                 lambda m: m["provenance"]["code_sha256"].__setitem__("works/export_v7s_series.py", "KeyA"),
+                 lambda m: m["provenance"]["code_sha256"].__setitem__("C:/Users/someone/x.py", "c" * 64),
+                 lambda m: m["provenance"]["v7s_runlogs_sha256"].pop("runlog.b3.ndjson"),
+                 lambda m: m["provenance"].__setitem__("code_sha256", {})):
         bad = json.loads(json.dumps(m))
         edit(bad)
         with pytest.raises(SystemExit, match="manifest.json"):
@@ -477,14 +486,69 @@ def test_main_checks_the_counts_and_the_manifest_then_writes(tmp_path, monkeypat
     monkeypatch.setattr(ex, "h0_of", lambda: [])
     monkeypatch.setattr(vu, "runlogs_as_v7s", lambda root, rec: None)
     monkeypatch.setattr(ex, "load", lambda v7_root, v7s_root, h0: _items())
-    monkeypatch.setattr(ex, "check_counts", lambda us, got, rec: calls.append(("counts", sorted(us), "counts" in rec)))
+    monkeypatch.setattr(ex, "read_record", lambda: {"counts": {}})
+    monkeypatch.setattr(ex, "check_counts", lambda st, rec: calls.append(("counts", st == ex.build(*_items())["status.csv"],
+                                                                        "counts" in rec)))
     real = ex.check_manifest
     monkeypatch.setattr(ex, "check_manifest", lambda m: (calls.append(("manifest", not out.exists())), real(m)))
     ex.main(["--v7-captures", str(tmp_path / "v7"), "--v7s-captures", str(v7s)])
-    assert calls[0] == ("counts", sorted(_items()[2]), True) and calls[1] == ("manifest", True)
+    assert calls[0] == ("counts", True, True) and calls[1] == ("manifest", True)
     m = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     assert set(m["files"]) == ex.FILES and set(m["provenance"]["v7s_runlogs_sha256"]) == \
         {f"runlog.b{b}.ndjson" for b in range(1, s7.N_BLOCKS + 1)}
     assert (out / "kupa-derived" / "F_H1.csv").read_bytes() == ex.build(*_items())["kupa-derived/F_H1.csv"]
     with pytest.raises(SystemExit, match="refusing to overwrite"):
         ex.main(["--v7-captures", str(tmp_path / "v7"), "--v7s-captures", str(v7s)])
+
+
+def test_a_captured_plan_needs_its_layers_and_a_series_without_the_hook_has_none():
+    """Codex (second round): a captured unit with a plan has hook and page rows (page only without the hook); hook
+    rows in a series without the hook stop."""
+    files = ex.build(*_items())
+    cut = lambda t, pre: "".join(x for x in t.splitlines(keepends=True) if not x.startswith(pre))  # noqa: E731
+    for name, edit, msg in [("kupa-derived/F_H1.csv", lambda t: cut(t, "F_H1,h01,page,"), "layers are not"),
+                            ("not-kupa-derived/K_chrome.csv", lambda t: cut(t, "K_chrome,c005,hook,"), "layers are not"),
+                            ("not-kupa-derived/F_K_nohook.csv",
+                             lambda t: t + "F_K_nohook,c000,hook,0,alnum,0.000000,\n", "layers are not"),
+                            ("not-kupa-derived/F_K_nohook.csv",   # a unit not captured: no hook or page rows at all
+                             lambda t: t.replace("F_K_nohook,c005,page,", "F_K_nohook,c005,hook,"), "layers are not")]:
+        with pytest.raises(SystemExit, match=msg):
+            ex.check_files(_with(files, name, edit))
+
+
+def _write(tmp_path, files):
+    out = tmp_path / "export_v7s_series"
+    ex.ex7.write_all(out, files, _manifest(files))
+    return out
+
+
+def test_verify_reads_the_returned_folder_as_the_work_pc_checked_it(tmp_path):
+    files = ex.build(*_items())
+    rec = _record(files)
+    out = _write(tmp_path, files)
+    assert ex.verify(out, rec)["files"] == ex.ex7.manifest_entries(files)
+    p = out / "not-kupa-derived" / "MC1.csv"
+    p.write_bytes(p.read_bytes().replace(b"12.839506", b"12.839507"))    # one time changed after the run
+    with pytest.raises(SystemExit, match="not the manifest's"):
+        ex.verify(out, rec)
+    out2 = _write(tmp_path / "b", files)
+    (out2 / "keys.txt").write_text("x", encoding="utf-8")                  # a file outside the release
+    with pytest.raises(SystemExit, match="not the release's"):
+        ex.verify(out2, rec)
+    out3 = _write(tmp_path / "c", files)
+    bad = json.loads(json.dumps(rec))
+    bad["counts"]["F_H1"]["captured"] += 1
+    with pytest.raises(SystemExit, match="F_H1"):
+        ex.verify(out3, bad)
+    with pytest.raises(SystemExit, match="no captures"):
+        ex.main(["--verify", str(out3), "--v7-captures", str(tmp_path)])
+
+
+def test_a_module_of_the_repo_outside_the_checked_list_stops(monkeypatch):
+    import types
+
+    m = types.ModuleType("numpy_shadow")
+    m.__file__ = str(ex.ROOT / "works" / "numpy_shadow.py")
+    monkeypatch.setitem(sys.modules, "numpy_shadow", m)
+    with pytest.raises(SystemExit, match="module numpy_shadow was loaded from works/numpy_shadow.py"):
+        ex.code_check()
