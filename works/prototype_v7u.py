@@ -255,7 +255,23 @@ def outside_firefox_page(res: dict) -> int:
     return n
 
 
+def record_shape(v7s_rec: dict) -> None:
+    """The parts of v7s's record this run reads after scoring are there before anything is scored."""
+    th = f"{s7.THETA:g}"
+    try:
+        ok = (isinstance(v7s_rec["criterion"][th]["cells"], dict) and isinstance(v7s_rec["criterion_human"][th], dict)
+              and isinstance(v7s_rec["path"]["path_sd_tables"], dict)
+              and isinstance(v7s_rec["provenance"]["v7s_runlogs_sha256"], dict)
+              and isinstance(v7s_rec["provenance"]["v7s_runs_sha256"], str))
+    except (KeyError, TypeError):
+        ok = False
+    if not ok:
+        raise s7.RunStop("v7s's record does not hold the criterion, criterion_human, path_sd tables and provenance "
+                         "this run compares with")
+
+
 def run(v7_root: Path, v7s_root: Path, v7s_rec: dict) -> dict:
+    record_shape(v7s_rec)
     runlogs_as_v7s(v7s_root, v7s_rec)
     h0, scorer, valid, files = persons_and_scorer()
     v7caps = run7.load_all(v7_root)

@@ -126,6 +126,14 @@ def test_same_bases():
     with pytest.raises(SystemExit):
         vu.same_bases(a, b)
     b["F_M0"].margins_of = "M0"
+    b["F_M0"].status = ["captured", "failed"]
+    with pytest.raises(SystemExit):
+        vu.same_bases(a, b)
+    b["F_M0"].status = ["captured", "no_plan"]
+    b["F_M0"].base.append(None)
+    with pytest.raises(SystemExit):
+        vu.same_bases(a, b)
+    b["F_M0"].base.pop()
     b["F_M0"].base[0] = s7.Sess([0.0, 6.0], ["alnum"] * 2)
     with pytest.raises(SystemExit):
         vu.same_bases(a, b)
@@ -135,9 +143,10 @@ def test_persons_and_scorer_is_v7s_mains_copy():
     """The copied part of v7s's main, statement for statement (names qualified with s7. and the return aside)."""
     import ast
     import inspect
+    import re
 
     def stmts(src: str) -> list[str]:
-        return [ast.unparse(n).replace("s7.", "") for n in ast.parse(src).body]
+        return [re.sub(r"\bs7\.", "", ast.unparse(n)) for n in ast.parse(src).body]
 
     main = ast.parse(inspect.getsource(s7.main)).body[0].body
     start = next(i for i, n in enumerate(main) if "load_conditions(run7.COND)" in ast.unparse(n))
@@ -145,8 +154,7 @@ def test_persons_and_scorer_is_v7s_mains_copy():
     theirs = [ast.unparse(n) for n in main[start:end + 1]]
     ours = stmts(inspect.cleandoc("\n".join(inspect.getsource(vu.persons_and_scorer).splitlines()[1:])))
     ours = [x for x in ours if not x.startswith(("return ", "'", '"'))]
-    assert [x.replace("RunStop", "s7.RunStop").replace("s7.", "") for x in ours] == \
-        [x.replace("RunStop", "s7.RunStop").replace("s7.", "") for x in theirs]
+    assert ours == theirs
 
 
 def test_runlogs_and_tables_as_v7s(tmp_path):
@@ -259,7 +267,8 @@ def test_run_assembles_the_record(monkeypatch):
     v7s_rec = {"criterion": {"1": _crit("not changed")},
                "criterion_human": {"1": {f"F_H1/{la}/{d}": {"observed_bc": [0, 0, 10], "predicted_bc": [0, 0, 10]}
                                          for la in run7.LAYERS for d in s7.DETECTORS}},
-               "path": {"path_sd_tables": {"firefox/page": {"1": 0.4, "50": 0.9}, "chrome/page": {"1": 0.3}}}}
+               "path": {"path_sd_tables": {"firefox/page": {"1": 0.4, "50": 0.9}, "chrome/page": {"1": 0.3}}},
+               "provenance": {"v7s_runlogs_sha256": {}, "v7s_runs_sha256": "r"}}
     rec = vu.run(Path("."), Path("."), v7s_rec)
     json.dumps(s7.to_json(rec), allow_nan=False)
     # both variants loaded and their bases compared before anything is scored; the margins once, from variant t
@@ -285,6 +294,12 @@ def test_outside_firefox_page_counts_hook_and_human_cells():
     assert vu.outside_firefox_page({"t": t, "h": res([0, 0, 9], [0, 0, 10])}) == 0
     assert vu.outside_firefox_page({"t": t, "h": res([0, 1, 9], [0, 0, 10])}) == 1
     assert vu.outside_firefox_page({"t": t, "h": res([0, 0, 9], [1, 0, 10])}) == 1
+
+
+def test_record_shape_stops_before_scoring(monkeypatch):
+    monkeypatch.setattr(vu, "runlogs_as_v7s", lambda *a: pytest.fail("went on with a record of another shape"))
+    with pytest.raises(SystemExit, match="does not hold"):
+        vu.run(Path("."), Path("."), {"criterion": {"1": {"cells": {}}}, "path": {"path_sd_tables": {}}})
 
 
 def test_main_stops_without_v7s_record(tmp_path, monkeypatch):
