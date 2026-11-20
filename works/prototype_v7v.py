@@ -114,18 +114,21 @@ SPLIT_MIN = 21                          # a person-derived side's quantiles only
 MIN_VALUES = run7.MIN_SUMMARY           # below this many values only the count, for every source
 
 
-def margin_summary(num: list[float], person: bool) -> dict | None:
-    """v7's summary: persons' sources without ends; plans with ends. Below MIN_VALUES values the count only."""
-    if len(num) < MIN_VALUES:
-        return {"n": len(num)} if num else None
+def margin_summary(num: list[float], person: bool) -> dict:
+    """v7's summary: persons' sources without ends and only from SPLIT_MIN values (with fewer, a 5th or 95th
+    percentile and its neighbour give the smallest or largest person's value); plans with ends from MIN_VALUES values.
+    Below that the count only."""
+    if len(num) < (SPLIT_MIN if person else MIN_VALUES):
+        return {"n": len(num)}
     return run7.summary(num, ends=not person)
 
 
 def margin_table(margins: dict, base_scores: dict, valid: dict) -> dict:
     """Per source and valid detector: sessions, without a margin, 'none', and the numeric margin_sd's distribution
-    (plans with ends; H0, M3a and M3b without), in all and by the unperturbed judgment. For a person-derived source
-    the two sides' quantiles are written only if both sides hold at least SPLIT_MIN numeric values, else both sides
-    give counts only (a quantile of few persons, or the difference with the whole, would give one person's value).
+    (plans with ends; H0, M3a and M3b without and only from SPLIT_MIN values), in all and by the unperturbed judgment.
+    For a person-derived source the two sides' quantiles are written only if both sides hold at least SPLIT_MIN
+    numeric values, else both sides give counts only (a quantile of few persons, or the difference with the whole,
+    would give one person's value).
     The sessions whose judgment and margin disagree (a margin without a judgment or none with one) are counted."""
     out = {}
     for name, per_det in margins.items():
@@ -138,7 +141,8 @@ def margin_table(margins: dict, base_scores: dict, valid: dict) -> dict:
                 raise s7.RunStop(f"{name}/{d}: {len(ms)} margins for {ok.size} sessions")
 
             def nums(mask):
-                return [float(m) for m, keep in zip(ms, mask) if keep and m is not None and m != "none"]
+                return [x for x in (float(m) for m, keep in zip(ms, mask) if keep and m is not None and m != "none")
+                        if np.isfinite(x)]
 
             def part(mask, dist: bool):
                 sel = [m for m, keep in zip(ms, mask) if keep]
@@ -293,22 +297,23 @@ def run(v7_root: Path, v7s_root: Path, v7s_rec: dict, v7u_rec: dict) -> dict:
     if set(sources) != MARGIN_SOURCES:
         raise s7.RunStop(f"the sources of margins are not the conditions': {sorted(sources)}")
     margins, counts = s7.all_margins(scorer, sources)   # once, from t
+    margin_rows = margin_table(margins, source_scores(scorer, sources), valid)   # before the variants' scoring
     res = {v: score_variant(loaded[v], scorer, valid, margins, counts) for v in vu.VARIANTS}
     th = f"{s7.THETA:g}"
     in_t, off_t, first_t = in_cell_counts(res["t"]["crit"][th]["cells"], res["t"]["kept"], valid)
     in_h, off_h, first_h = in_cell_counts(res["h"]["crit"][th]["cells"], res["h"]["kept"], valid, True)
-    base_scores = source_scores(scorer, sources)
     rep = reproduction(res, loaded["t"]["tables"], s7.jitter_table(counts, sources), v7s_rec, v7u_rec)
     return {
         "valid": valid,
         "reproduction": rep,
-        "usable": bool(rep["all_as_deposited"] and off_t == 0 and off_h == 0),
+        "usable": bool(rep["all_as_deposited"] and off_t == 0 and off_h == 0
+                       and all(r["judgment_not_as_margin"] == 0 for r in margin_rows.values())),
         "judged": {"t": judged_counts(res["t"]["scores"], valid),
                    "h": judged_counts(res["h"]["scores"], valid, only_firefox_page=True)},
         "in_cell": {"t": in_t, "h": in_h,
                     "cells_not_as_observed_bc": {"t": off_t, "h": off_h}, "first_not_as_observed_bc":
                         {"t": first_t, "h": first_h}},
-        "margins": margin_table(margins, base_scores, valid),
+        "margins": margin_rows,
         "data_sha256": {n: s_ for n, (_, s_) in files.items()},
     }
 

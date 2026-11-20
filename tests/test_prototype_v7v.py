@@ -250,9 +250,11 @@ def _run_stubs(monkeypatch, valid=VALID, sources=None):
     monkeypatch.setattr(s7, "margin_sources", lambda series, h0: calls.append(f"sources_{series}") or src)
     monkeypatch.setattr(s7, "all_margins", lambda scorer, s: calls.append("margins") or ({}, {}))
     monkeypatch.setattr(vv, "score_variant", lambda loaded, *a: calls.append(f"score_{loaded['series']}") or
-                        {"scores": {}, "crit": {"1": {"cells": {}}}, "human": {}, "kept": {}})
+                        {"scores": {"variant": loaded["series"]}, "crit": {"1": {"cells": {"variant": loaded["series"]}}},
+                         "human": {}, "kept": {}})
     monkeypatch.setattr(vv, "reproduction", lambda *a: {"all_as_deposited": True})
     monkeypatch.setattr(vv, "judged_counts", lambda *a, **k: {})
+    monkeypatch.setattr(vv, "in_cell_counts", lambda *a, **k: ({}, 0, []))
     monkeypatch.setattr(vv, "margin_table", lambda *a: {})
     monkeypatch.setattr(vv, "source_scores", lambda *a: calls.append("source_scores") or {})
     monkeypatch.setattr(s7, "jitter_table", lambda *a: {})
@@ -263,7 +265,7 @@ def test_run_order(monkeypatch):
     calls = _run_stubs(monkeypatch)
     rec = vv.run(Path("."), Path("."), {}, {})
     assert calls == ["v7s_shape", "v7s_parts", "v7u_shape", "runlogs", "persons", "load_t", "load_h", "bases",
-                     "sources_t", "margins", "score_t", "score_h", "source_scores"]
+                     "sources_t", "margins", "source_scores", "score_t", "score_h"]
     assert set(rec) == {"valid", "reproduction", "usable", "judged", "in_cell", "margins", "data_sha256"}
 
 
@@ -440,13 +442,34 @@ def test_run_passes_variant_h_restricted(monkeypatch):
     calls = _run_stubs(monkeypatch)
     seen = []
     monkeypatch.setattr(vv, "judged_counts", lambda scores, valid, only_firefox_page=False: seen.append(
-        ("judged", only_firefox_page)) or {})
+        ("judged", scores["variant"], only_firefox_page)) or {})
     monkeypatch.setattr(vv, "in_cell_counts", lambda cells, kept, valid, only_firefox_page=False: seen.append(
-        ("in_cell", only_firefox_page)) or ({}, 0, []))
+        ("in_cell", cells["variant"], only_firefox_page)) or ({}, 0, []))
     rec = vv.run(Path("."), Path("."), {}, {})
-    assert sorted(seen) == [("in_cell", False), ("in_cell", True), ("judged", False), ("judged", True)]
+    assert sorted(seen) == [("in_cell", "h", True), ("in_cell", "t", False), ("judged", "h", True),
+                            ("judged", "t", False)]
     assert rec["usable"] is True
-    assert calls[-1] == "source_scores"
+    assert calls.index("source_scores") < calls.index("score_t")   # the margins' table before the scoring
+
+
+def test_usable_needs_judgments_and_margins_to_agree(monkeypatch):
+    _run_stubs(monkeypatch)
+    monkeypatch.setattr(vv, "margin_table", lambda *a: {"M0/D1": {"judgment_not_as_margin": 1}})
+    assert vv.run(Path("."), Path("."), {}, {})["usable"] is False
+    monkeypatch.setattr(vv, "margin_table", lambda *a: {"M0/D1": {"judgment_not_as_margin": 0}})
+    assert vv.run(Path("."), Path("."), {}, {})["usable"] is True
+
+
+def test_person_sources_whole_distribution_only_from_21():
+    for n, quantiles in ((5, False), (20, False), (21, True)):
+        ms = [0.1 * (i + 1) for i in range(n)]
+        for name in ("H0", "M3a"):
+            t = vv.margin_table({name: {"D6": ms}}, {name: {"D6": np.full(n, 0.1)}}, {"D6": True})[f"{name}/D6"]
+            assert ("median" in t["margin_sd_ms"]) is quantiles and "min" not in t["margin_sd_ms"]
+        t = vv.margin_table({"M0": {"D6": ms}}, {"M0": {"D6": np.full(n, 0.1)}}, {"D6": True})["M0/D6"]
+        assert "min" in t["margin_sd_ms"]                                   # plans: with ends from 5
+    t = vv.margin_table({"M0": {"D6": [1.0, float("inf"), 2.0]}}, {"M0": {"D6": np.full(3, 0.1)}}, {"D6": True})
+    assert t["M0/D6"]["margin_sd_ms"] == {"n": 2} and t["M0/D6"]["by_judgment"]["machine"]["margin_sd_ms"] == {"n": 0}
 
 
 @pytest.mark.parametrize("off_t, off_h", [(1, 0), (0, 1)])
