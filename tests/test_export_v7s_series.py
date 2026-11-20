@@ -438,7 +438,7 @@ def test_main_stops_before_writing_when_a_check_stops(tmp_path, monkeypatch):
     out = tmp_path / "export_v7s_series"
     monkeypatch.setattr(ex, "OUT", out)
     monkeypatch.setattr(ex, "V7U_COMMIT", "ea634630a29983c41ff905fda738f72abde183e6")
-    with pytest.raises(SystemExit, match="differs from"):
+    with pytest.raises(SystemExit, match="base is not the code's"):
         ex.main(["--v7-captures", str(tmp_path / "v7"), "--v7s-captures", str(tmp_path / "v7s")])
     assert not out.exists() and not (tmp_path / "export_v7s_series.tmp").exists()
     monkeypatch.undo()
@@ -462,3 +462,29 @@ def test_load_stops_when_an_item_outside_the_runlogs_is_read(tmp_path, monkeypat
     monkeypatch.setattr(s7, "check_one_firefox", lambda *a: None)
     with pytest.raises(SystemExit, match="1 items outside the runlogs"):
         ex.load(tmp_path, tmp_path, [])
+
+
+def test_main_checks_the_counts_and_the_manifest_then_writes(tmp_path, monkeypatch):
+    """main from the checks to the files, with v7s's loading and H0 replaced by the test's items (the counts check and
+    the manifest check are called with what main builds; the files and manifest are written only after both)."""
+    out = tmp_path / "export_v7s_series"
+    v7s = tmp_path / "v7s"
+    v7s.mkdir()
+    for b in range(1, s7.N_BLOCKS + 1):
+        (v7s / f"runlog.b{b}.ndjson").write_text("{}\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(ex, "OUT", out)
+    monkeypatch.setattr(ex, "h0_of", lambda: [])
+    monkeypatch.setattr(vu, "runlogs_as_v7s", lambda root, rec: None)
+    monkeypatch.setattr(ex, "load", lambda v7_root, v7s_root, h0: _items())
+    monkeypatch.setattr(ex, "check_counts", lambda us, got, rec: calls.append(("counts", sorted(us), "counts" in rec)))
+    real = ex.check_manifest
+    monkeypatch.setattr(ex, "check_manifest", lambda m: (calls.append(("manifest", not out.exists())), real(m)))
+    ex.main(["--v7-captures", str(tmp_path / "v7"), "--v7s-captures", str(v7s)])
+    assert calls[0] == ("counts", sorted(_items()[2]), True) and calls[1] == ("manifest", True)
+    m = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert set(m["files"]) == ex.FILES and set(m["provenance"]["v7s_runlogs_sha256"]) == \
+        {f"runlog.b{b}.ndjson" for b in range(1, s7.N_BLOCKS + 1)}
+    assert (out / "kupa-derived" / "F_H1.csv").read_bytes() == ex.build(*_items())["kupa-derived/F_H1.csv"]
+    with pytest.raises(SystemExit, match="refusing to overwrite"):
+        ex.main(["--v7-captures", str(tmp_path / "v7"), "--v7s-captures", str(v7s)])
