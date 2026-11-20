@@ -205,3 +205,23 @@ def test_times_from_large_ns_keep_the_ns():
     c.layers["hook"] = lay
     rows = [r for r in ex.rows_of(c) if r[2] == "hook"]
     assert [r[5] for r in rows] == ["0.000000", "123.456789", "987654.321987"]
+
+
+def test_the_lock_is_a6fa5cas_or_7d02179s_which_only_adds_lightgbm(monkeypatch):
+    """uv.lock moved on with v7s (LightGBM): 7d02179's lock only adds lines to a6fa5ca's; the check takes either and
+    nothing else."""
+    import subprocess
+
+    d = subprocess.run(["git", "diff", "--numstat", ex.LOCK_COMMITS[0], ex.LOCK_COMMITS[1], "--", "uv.lock"],
+                       cwd=ex.ROOT, capture_output=True, text=True, check=True).stdout.split()
+    assert d[:3] == ["20", "0", "uv.lock"]
+    added = subprocess.run(["git", "diff", "-U0", ex.LOCK_COMMITS[0], ex.LOCK_COMMITS[1], "--", "uv.lock"],
+                           cwd=ex.ROOT, capture_output=True, text=True, check=True).stdout
+    assert "+name = \"lightgbm\"" in added and added.count("\n+[[package]]") == 1
+    ex.lock_check()
+    monkeypatch.setattr(ex, "LOCK_COMMITS", ("5c34b85", "5c34b85"))
+    monkeypatch.setattr(ex, "ROOT", ex.ROOT)
+    real = ex.cm.git
+    monkeypatch.setattr(ex.cm, "git", lambda *a: "0" * 40 if a[0] == "hash-object" else real(*a))
+    with pytest.raises(SystemExit, match="uv.lock is neither"):
+        ex.lock_check()

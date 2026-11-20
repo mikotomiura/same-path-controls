@@ -28,6 +28,15 @@ import prototype_v7_run as vr  # noqa: E402
 COND = ROOT / "works" / "conditions" / "export_v7_series.json"
 OUT = ROOT / "results" / "export_v7_series"
 BASE_COMMIT = "a6fa5cae45579c2b4cc95ccb938eab6ea622310e"
+# uv.lock: a6fa5ca's, or 7d02179's (v7s's conditions: LightGBM 4.7.0 and nothing else added, no line removed or changed;
+# no module v7's analysis imports changes). Amended before any capture was read (2026-11-20).
+LOCK_COMMITS = (BASE_COMMIT, "7d02179ac8eba2429a337045029df17be8cf0aaf")
+
+
+def lock_check() -> None:
+    have = cm.git("hash-object", "--no-filters", str(ROOT / "uv.lock"))
+    if have not in {cm.git("rev-parse", f"{c}:uv.lock") for c in LOCK_COMMITS}:
+        raise SystemExit(f"uv.lock is neither {LOCK_COMMITS[0][:7]}'s nor {LOCK_COMMITS[1][:7]}'s")
 CODE = ["works/prototype_v7_run.py", "works/prototype_v7.py", "works/prototype_v6.py", "works/_common.py"]
 KUPA_DERIVED = ("H1_idle", "H1_load", "H1_rep", "M3a", "M3b")
 NOT_KUPA_DERIVED = ("M0", "M1_8B", "M1_14B", "M1_replay_8B", "M1_replay_14B", "M2_8B", "M2_14B",
@@ -182,8 +191,10 @@ def main(argv: list[str] | None = None) -> None:
              *dict.fromkeys([*CODE, *vr.CODE]), "works/conditions/prototype_v7.json"]
     cm.same_as_head([ROOT / p for p in paths])
     state = cm.git_state(paths)
-    if cm.git("diff", "--name-only", BASE_COMMIT, "HEAD", "--", *vr.CODE, "works/conditions/prototype_v7.json"):
+    if cm.git("diff", "--name-only", BASE_COMMIT, "HEAD", "--", *[p for p in vr.CODE if p != "uv.lock"],
+              "works/conditions/prototype_v7.json"):
         raise SystemExit(f"v7's analysis code or conditions differ from {BASE_COMMIT}")
+    lock_check()
     raw = COND.read_bytes()
     if cm.sha256(vr.COND) != json.loads(raw)["base"]["v7_conditions_sha256"]:
         raise SystemExit("v7's conditions are not the bytes this export is based on")
