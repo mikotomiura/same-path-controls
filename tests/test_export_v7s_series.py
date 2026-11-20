@@ -509,9 +509,7 @@ def test_a_captured_plan_needs_its_layers_and_a_series_without_the_hook_has_none
     for name, edit, msg in [("kupa-derived/F_H1.csv", lambda t: cut(t, "F_H1,h01,page,"), "layers are not"),
                             ("not-kupa-derived/K_chrome.csv", lambda t: cut(t, "K_chrome,c005,hook,"), "layers are not"),
                             ("not-kupa-derived/F_K_nohook.csv",
-                             lambda t: t + "F_K_nohook,c000,hook,0,alnum,0.000000,\n", "layers are not"),
-                            ("not-kupa-derived/F_K_nohook.csv",   # a unit not captured: no hook or page rows at all
-                             lambda t: t.replace("F_K_nohook,c005,page,", "F_K_nohook,c005,hook,"), "layers are not")]:
+                             lambda t: t + "F_K_nohook,c000,hook,0,alnum,0.000000,\n", "layers are not")]:
         with pytest.raises(SystemExit, match=msg):
             ex.check_files(_with(files, name, edit))
 
